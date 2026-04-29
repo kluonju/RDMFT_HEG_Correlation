@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <vector>
 
@@ -126,11 +127,146 @@ inline std::vector<double> initial_step(double rs, const Grid& g) {
     return n;
 }
 
+// Solve dh(n) = s for n in [0,1], where dh(n) = (1 - 2n) / (2 sqrt(n(1-n)))
+// (the derivative of the CGA "hole" h(n) = sqrt(n(1-n))).  Closed-form:
+//
+//     u := 1 - 2n  satisfies  u^2 (1 + s^2) = s^2   =>   u = s / sqrt(1 + s^2),
+//
+// with the sign of u tracking the sign of s automatically.  Hence
+// n = 0.5 (1 - s / sqrt(1 + s^2)).
+inline double invert_dh_cga(double s) {
+    const double u = s / std::sqrt(1.0 + s * s);
+    return std::clamp(0.5 * (1.0 - u), 0.0, 1.0);
+}
+
+// Solve  beta * (n(1-n))^(beta-1) * (1 - 2 n) = s   for n in [0, 1].
+// Equivalent (with u = 1 - 2n,  x = n(1-n) = (1 - u^2)/4) to
+//
+//     u * (1 - u^2)^(beta-1) = B,    B = (s / beta) * 4^(beta-1).
+//
+// On (-1, 1) the LHS is monotonic for beta < 1 and for the betas we use,
+// so a simple bracketed Brent / bisection step converges quickly.
+inline double invert_dgbeta(double s, double beta) {
+    if (beta <= 0.0) {
+        // Degenerate: g_2 is constant in n away from endpoints, so the EL
+        // equation is satisfied for any interior n.  Default to 0.5.
+        return 0.5;
+    }
+    const double B = (s / beta) * std::pow(4.0, beta - 1.0);
+    auto f = [&](double u) {
+        const double y = 1.0 - u * u;
+        if (y <= 0.0) return 0.0;
+        return u * std::pow(y, beta - 1.0);
+    };
+    // Bracket: f is monotonically increasing in u for the betas of interest.
+    // Endpoints: f(±1) = ±infinity for beta < 1, ±0 for beta > 1, depending.
+    // Use a tight bracket of (-1+eps, 1-eps).
+    const double eps = 1.0e-10;
+    double lo = -1.0 + eps;
+    double hi =  1.0 - eps;
+    double flo = f(lo);
+    double fhi = f(hi);
+    // Saturate if outside the bracket.
+    if (B <= flo) return std::clamp(0.5 * (1.0 - lo), 0.0, 1.0);
+    if (B >= fhi) return std::clamp(0.5 * (1.0 - hi), 0.0, 1.0);
+    for (int it = 0; it < 80; ++it) {
+        double mid = 0.5 * (lo + hi);
+        double fm  = f(mid);
+        if (fm < B) lo = mid; else hi = mid;
+        if (hi - lo < 1.0e-12) break;
+    }
+    const double u = 0.5 * (lo + hi);
+    return std::clamp(0.5 * (1.0 - u), 0.0, 1.0);
+}
+
+// Closed-form occupation update for kernels with the additive structure
+//
+//     K(n_i, n_j) = n_i n_j + g(n_i) g(n_j),
+//
+// covering CGA (g(n) = sqrt(n(1-n))) and the Beta family
+// (g(n) = (n(1-n))^beta).  For each i we solve
+//
+//     U_HF_i + g'(n_i) U_g_i = pi k_i (k_i^2/2 - mu)
+//
+// for n_i in [0, 1] using the dedicated 1-D inverters above.  When U_g_i is
+// numerically too small we fall back to the HF step occupation, which is
+// the correct limit when g_j -> 0 everywhere.
+template <class Inverter>
+inline std::vector<double>
+update_occupations_additive(double mu,
+                            const std::vector<double>& U_HF,
+                            const std::vector<double>& U_g,
+                            const Grid& g,
+                            Inverter invert_dg) {
+    constexpr double pi = M_PI;
+    const std::size_t N = g.n();
+    std::vector<double> n(N, 0.0);
+    const double tiny = 1.0e-14;
+    for (std::size_t i = 0; i < N; ++i) {
+        const double k  = g.k[i];
+        if (k <= 0.0) { n[i] = 1.0; continue; }
+        const double R  = pi * k * (0.5 * k * k - mu);
+        const double dU = R - U_HF[i];
+        if (std::abs(U_g[i]) < tiny) {
+            // No hole contribution: revert to the HF step rule.  Since the
+            // sign of U_HF compares against R, this matches the HF EL.
+            n[i] = (dU >= 0.0) ? 0.0 : 1.0;
+            continue;
+        }
+        const double s = dU / U_g[i];
+        n[i] = invert_dg(s);
+    }
+    return n;
+}
+
+// Generic helper that computes U_i = sum_j W(i,j) k_j fn(n_j).  Used to build
+// the U_HF and U_g sums above, matching the convention of the existing
+// `update_occupations_power` (no `w_j` factor, exactly matching `V_inner`).
+inline std::vector<double>
+compute_U_with(const std::vector<double>& nv,
+               const Grid& g,
+               const ExchangeKernel& W,
+               const std::function<double(double)>& fn) {
+    const std::size_t N = g.n();
+    std::vector<double> U(N, 0.0);
+    std::vector<double> kf(N);
+    for (std::size_t j = 0; j < N; ++j) kf[j] = g.k[j] * fn(nv[j]);
+    for (std::size_t i = 0; i < N; ++i) {
+        double s = 0.0;
+        for (std::size_t j = 0; j < N; ++j) s += W(i, j) * kf[j];
+        U[i] = s;
+    }
+    return U;
+}
+
+// Smeared initial guess: a sigmoid centred at the Fermi wave vector, which
+// is more friendly to non-factorizable additive kernels (CGA / Beta) whose
+// EL equation requires non-zero g(n) g'(n) to engage.  width controls the
+// fractional smearing relative to k_F.
+inline std::vector<double>
+initial_smeared(double rs, const Grid& g, double width = 0.10) {
+    const std::size_t N = g.n();
+    const double kf = HEG::kF(rs);
+    const double w  = std::max(width, 1.0e-3) * kf;
+    std::vector<double> n(N, 0.0);
+    for (std::size_t i = 0; i < N; ++i) {
+        n[i] = 1.0 / (1.0 + std::exp((g.k[i] - kf) / w));
+    }
+    return n;
+}
+
 // Self-consistent solve for any Functional.  Power-family functionals use the
-// closed-form occupation update; other functionals (e.g. BBC1) fall back to a
-// projected-gradient step driven by the analytic dE/dn.  Both branches use
-// bisection on the chemical potential to enforce particle-number conservation
-// at every iteration.
+// closed-form occupation update; non-factorizable but additive kernels (CGA,
+// Beta) use a dedicated closed-form 1-D inverter; other functionals
+// (e.g. BBC1) fall back to a projected-gradient step driven by the analytic
+// dE/dn.  All branches use bisection on the chemical potential to enforce
+// particle-number conservation at every iteration.
+//
+// For the additive (CGA / Beta) branch the energy landscape has a competing
+// HF minimum (every step occupation is a stationary point of K_CGA) and a
+// correlated, fractionally-occupied minimum.  We therefore try several
+// initial guesses with different smearing widths and keep the lowest-energy
+// converged solution.
 inline SolveResult
 solve_rdmft(double rs,
             const Functional& F,
@@ -139,22 +275,50 @@ solve_rdmft(double rs,
             const SolveOptions& opt = {}) {
     const double rho_target = HEG::density(rs);
 
-    // Detect Power-family functionals.
-    const PowerFunctional* pf  = dynamic_cast<const PowerFunctional*>(&F);
-    const HFFunctional*    hf  = dynamic_cast<const HFFunctional*>(&F);
+    // Detect Power-family functionals.  GU shares the Mueller kernel in the
+    // HEG (the orbital self-interaction terms vanish for plane waves), so it
+    // takes the closed-form Power(alpha=1/2) update too.
+    const PowerFunctional*   pf   = dynamic_cast<const PowerFunctional*>(&F);
+    const HFFunctional*      hf   = dynamic_cast<const HFFunctional*>(&F);
     const MuellerFunctional* mu_f = dynamic_cast<const MuellerFunctional*>(&F);
-    const bool factorized = (pf != nullptr) || (hf != nullptr) || (mu_f != nullptr);
+    const GUFunctional*      gu_f = dynamic_cast<const GUFunctional*>(&F);
+    const bool factorized = (pf != nullptr) || (hf != nullptr)
+                          || (mu_f != nullptr) || (gu_f != nullptr);
+
+    // Detect additive-kernel functionals K = n_i n_j + g(n_i) g(n_j).
+    const CGAFunctional*  cga  = dynamic_cast<const CGAFunctional*>(&F);
+    const BetaFunctional* beta_f = dynamic_cast<const BetaFunctional*>(&F);
+    const bool additive = (cga != nullptr) || (beta_f != nullptr);
 
     double alpha = 1.0;
     if (pf)        alpha = pf->alpha();
     else if (mu_f) alpha = 0.5;
+    else if (gu_f) alpha = 0.5;
     else if (hf)   alpha = 1.0;
 
     auto density_of = [&](const std::vector<double>& nv) {
         return EnergyEvaluator::density(nv, g);
     };
 
-    std::vector<double> n = initial_step(rs, g);
+    // Multi-start strategy for additive kernels: probe several smearing
+    // widths and keep the lowest-energy result.  CGA / Beta have a stable
+    // local minimum at the HF step distribution because g'(n) -> infinity at
+    // the endpoints, so we deliberately seed a broad range of fractionally-
+    // occupied initial conditions.  For factorized and generic functionals
+    // one start (sharp step) is enough.
+    const std::vector<std::pair<bool, double>> starts = additive
+        ? std::vector<std::pair<bool, double>>{
+              {false, 0.05}, {false, 0.10}, {false, 0.20},
+              {false, 0.40}, {false, 0.80}, {false, 1.50}}
+        : std::vector<std::pair<bool, double>>{{true, 0.0}};
+
+    SolveResult best;
+    bool best_set = false;
+    for (const auto& start : starts) {
+
+    std::vector<double> n = start.first
+        ? initial_step(rs, g)
+        : initial_smeared(rs, g, start.second);
     double mu = 0.5 * HEG::kF(rs) * HEG::kF(rs);
     int it = 0;
     bool converged = false;
@@ -185,6 +349,15 @@ solve_rdmft(double rs,
         return 0.5 * (lo + hi);
     };
 
+    // Pick the appropriate hole inverter for additive kernels.
+    auto invert_dg = [&](double s) -> double {
+        if (cga)    return invert_dh_cga(s);
+        if (beta_f) return invert_dgbeta(s, beta_f->beta());
+        return 0.5;
+    };
+
+    auto identity_id = [](double n_) { return n_; };
+
     for (it = 0; it < opt.max_iter; ++it) {
         std::vector<double> n_target;
 
@@ -192,6 +365,43 @@ solve_rdmft(double rs,
             auto U = compute_U(n);
             mu = bisect_mu_factorized(U);
             n_target = update_occupations_power(alpha, mu, U, g);
+        } else if (additive) {
+            // Additive kernel K = n_i n_j + g(n_i) g(n_j): closed-form update
+            // for n_i once mu is found by bisection.  We use a soft floor on
+            // n in [n_floor, 1 - n_floor] when computing g(n) so that even
+            // near-saturated occupations contribute a finite hole U_g, which
+            // lets the SCF escape the metastable HF-like fixed point.  The
+            // floor is taken small enough that converged solutions are not
+            // affected to leading order (energies use the unmodified n).
+            const double n_floor = 1.0e-6;
+            auto g_of = [&](double n_) {
+                const double nc = std::clamp(n_, n_floor, 1.0 - n_floor);
+                if (cga) {
+                    return std::sqrt(nc * (1.0 - nc));
+                }
+                if (beta_f) {
+                    return std::pow(nc * (1.0 - nc), beta_f->beta());
+                }
+                return 0.0;
+            };
+
+            auto U_HF = compute_U_with(n, g, W, identity_id);
+            auto U_g  = compute_U_with(n, g, W, g_of);
+
+            auto bisect_mu_additive = [&]() {
+                double lo = opt.mu_lo, hi = opt.mu_hi;
+                for (int b = 0; b < opt.bisect_iter; ++b) {
+                    double m = 0.5 * (lo + hi);
+                    auto n_try = update_occupations_additive(
+                        m, U_HF, U_g, g, invert_dg);
+                    if (density_of(n_try) > rho_target) hi = m;
+                    else                                 lo = m;
+                }
+                return 0.5 * (lo + hi);
+            };
+            mu = bisect_mu_additive();
+            n_target = update_occupations_additive(
+                mu, U_HF, U_g, g, invert_dg);
         } else {
             // Generic projected-gradient with bisection on mu.
             auto eps = EnergyEvaluator::pseudo_energy(n, g, W, F);
@@ -242,7 +452,17 @@ solve_rdmft(double rs,
     res.E_per_N   = (res.rho > 0.0) ? res.E_per_V / res.rho : 0.0;
     res.iters     = it;
     res.converged = converged;
-    return res;
+
+    // Variational selection: among all the start configurations tried,
+    // keep the one that minimizes the total energy and is consistent with
+    // the density constraint.
+    if (!best_set || res.E_per_N < best.E_per_N) {
+        best = res;
+        best_set = true;
+    }
+    }  // end multi-start loop
+
+    return best_set ? best : SolveResult{};
 }
 
 }  // namespace rdmft
