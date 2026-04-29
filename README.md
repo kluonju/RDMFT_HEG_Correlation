@@ -41,8 +41,32 @@ E_xc/V = -(1 / (2π³)) ∬₀^∞ k k' K(n(k), n(k'))
 * HF（精确交换） &nbsp;⇔ `α = 1`
 * Müller / BB &nbsp;⇔ `α = 1/2`
 * Power（Sharma 等） &nbsp;⇔ `α ∈ (0, 1)`，常用 `0.55 ~ 0.58`
+* GU（Goedecker–Umrigar 1998） &nbsp;⇔ Müller 的 `α=1/2` 形式
+  外加去除单轨道自相互作用；在 HEG（平面波）极限下与 Müller 相同。
 
-非可分核的例子（BBC1）也已实现，作为扩展示例。
+不可分（非乘积）核也已实现：
+
+* **BBC1**（Gritsenko–Pernal–Baerends 2005）：弱占据态对加负号。
+* **CGA**（Csányi–Goedecker–Arias，*Phys. Rev. A* **65**, 032510 (2002)）：
+
+  ```
+  K_CGA(n_i, n_j) = n_i n_j  +  sqrt(n_i (1 - n_i)) * sqrt(n_j (1 - n_j))
+  ```
+
+  为 HF 交换加上一个空穴/统计相关贡献，对高密度 HEG 表现良好。
+
+* **Beta**（本项目新增）：将 CGA 的空穴部分推广为可调指数
+
+  ```
+  K_beta(n_i, n_j) = n_i n_j + [ n_i (1 - n_i) * n_j (1 - n_j) ]^beta
+  ```
+
+  默认运行三个 `beta` 值（`0.45 / 0.55 / 0.65`）以演示其在 HF
+  与 CGA 之间的插值行为：
+
+  * `beta -> +infinity` &nbsp;⇒ 纯 HF；
+  * `beta = 1/2` &nbsp;⇒ 与 CGA 相同；
+  * `beta < 1/2` &nbsp;⇒ 空穴贡献变强，相关性更强（Müller 极限方向）。
 
 ### 1.2 数值积分
 
