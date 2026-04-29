@@ -36,7 +36,7 @@ run: $(TARGET)
 	mkdir -p data
 	./$(TARGET) --N 401 --kmax 6 \
 		--rs 0.2,0.3,0.5,1,2,3,4,5,6,8,10 \
-		--funcs HF,Mueller,Power@0.55,Power@0.58 \
+		--funcs HF,Mueller,GU,CGA,Power@0.55,Power@0.58,Beta@0.45,Beta@0.55,Beta@0.65 \
 		--out data/results.tsv
 
 plot:

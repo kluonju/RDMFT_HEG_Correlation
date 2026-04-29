@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <string>
 
@@ -92,6 +93,149 @@ private:
     double alpha_;
 };
 
+// Goedecker-Umrigar (GU) functional [S. Goedecker, C. J. Umrigar,
+// Phys. Rev. Lett. 81, 866 (1998)].  Uses the same square-root kernel as
+// Mueller, f(n) = sqrt(n), but with the orbital self-interaction (i = j)
+// terms explicitly removed in the original definition.
+//
+// In the HEG with plane-wave natural orbitals the two-particle exchange
+// integral <ij|ji> for i = j vanishes by translational invariance, so the
+// self-interaction terms are zero and GU coincides numerically with the
+// Mueller functional in this special case.  We still provide it as a separate
+// class so that benchmark tables and plots can label it explicitly, and so
+// that the framework can be extended to finite systems in the future.
+class GUFunctional : public Functional {
+public:
+    std::string name() const override { return "GU"; }
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+};
+
+// CGA functional [G. Csanyi, S. Goedecker, T. A. Arias,
+// Phys. Rev. A 65, 032510 (2002)].  Non-factorizable two-body kernel
+//
+//     K_CGA(n_i, n_j) = n_i n_j + sqrt(n_i (1 - n_i)) * sqrt(n_j (1 - n_j))
+//
+// The first piece reproduces the Hartree-Fock exchange while the second
+// "hole" piece introduces dynamic correlation that is large for fractional
+// occupations.  CGA is known to give an excellent description of the high-
+// density HEG correlation energy and to outperform HF at metallic densities.
+//
+// The kernel is symmetric: K(n_i, n_j) = K(n_j, n_i), so the same
+// kernel_grad signature used by BBC1Functional applies (derivative w.r.t.
+// the first argument).
+class CGAFunctional : public Functional {
+public:
+    std::string name() const override { return "CGA"; }
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+    double kernel(double ni, double nj) const override {
+        const double hi = hole(ni);
+        const double hj = hole(nj);
+        return ni * nj + hi * hj;
+    }
+    double kernel_grad(double ni, double nj) const override {
+        const double hj = hole(nj);
+        return nj + dhole(ni) * hj;
+    }
+
+private:
+    static double hole(double n) {
+        if (n <= 0.0 || n >= 1.0) return 0.0;
+        return std::sqrt(n * (1.0 - n));
+    }
+    static double dhole(double n) {
+        const double eps = 1.0e-12;
+        const double x = n * (1.0 - n);
+        if (x <= eps) {
+            // Cap the derivative near the endpoints to avoid divergences in
+            // the projected-gradient solver.  The cap matches |dh/dn| at
+            // n = eps (or 1 - eps).
+            const double xc = eps;
+            return (1.0 - 2.0 * n) / (2.0 * std::sqrt(xc));
+        }
+        return (1.0 - 2.0 * n) / (2.0 * std::sqrt(x));
+    }
+};
+
+// Beta functional (this work).  Generalizes the CGA hole piece via an
+// adjustable exponent beta:
+//
+//     K_beta(n_i, n_j) = n_i n_j + [ n_i (1 - n_i) * n_j (1 - n_j) ]^beta
+//
+// Special / limiting cases:
+//
+//   * beta = 1/2  -> exactly the CGA kernel.
+//   * beta -> +infinity  -> the bracket vanishes (since 0 <= n(1-n) <= 1/4)
+//                         and we recover Hartree-Fock.
+//   * beta -> 0          -> the hole saturates at 1 for any fractional
+//                          occupation, an extreme over-correlating limit.
+//
+// Smaller beta therefore enhances the correlation hole and increases |E_c|;
+// larger beta suppresses it and tends to HF.  Tuning beta thus interpolates
+// between an under-correlated (HF) and over-correlated (Mueller-like) regime
+// and lets the user fit the QMC reference for the HEG.
+class BetaFunctional : public Functional {
+public:
+    explicit BetaFunctional(double beta) : beta_(beta) {}
+    std::string name() const override {
+        // Use a compact, parseable label so that downstream scripts can
+        // pretty-print it as "Beta(0.50)" etc.
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "Beta(beta=%.3f)", beta_);
+        return std::string(buf);
+    }
+    // f / df are not used for non-factorizable kernels; they are provided
+    // only to satisfy the abstract base class.  Returning the Mueller
+    // square-root form keeps any accidental reference well-defined.
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+    double kernel(double ni, double nj) const override {
+        const double xi = clamp_x(ni);
+        const double xj = clamp_x(nj);
+        if (xi <= 0.0 || xj <= 0.0) return ni * nj;
+        return ni * nj + std::pow(xi * xj, beta_);
+    }
+    double kernel_grad(double ni, double nj) const override {
+        const double xi = clamp_x(ni);
+        const double xj = clamp_x(nj);
+        if (xi <= 0.0 || xj <= 0.0) return nj;
+        // d/dn_i [ (n_i(1-n_i) n_j(1-n_j))^beta ]
+        //   = beta * (x_i x_j)^(beta-1) * (1 - 2 n_i) * x_j
+        //   = beta * x_i^(beta-1) * x_j^beta * (1 - 2 n_i)
+        const double pref = beta_ * std::pow(xi, beta_ - 1.0)
+                                  * std::pow(xj, beta_);
+        return nj + pref * (1.0 - 2.0 * ni);
+    }
+    double beta() const { return beta_; }
+
+private:
+    double beta_;
+    // Floor n(1-n) to a tiny positive value so that pow(x, beta-1) is
+    // finite for beta < 1 at the endpoints.  This is only relevant for the
+    // gradient; energies use beta >= 0 and the contribution at n=0,1 is 0.
+    static double clamp_x(double n) {
+        const double x = n * (1.0 - n);
+        const double eps = 1.0e-12;
+        return (x > eps) ? x : eps;
+    }
+};
+
 // BBC1 (Gritsenko, Pernal, Baerends 2005).  In a plane-wave basis it reduces
 // to using the Mueller kernel everywhere except that pairs of "weakly
 // occupied" orbitals (n_i, n_j < 1/2 in the paramagnetic case) get a sign
@@ -145,8 +289,13 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
                                                    double alpha = 0.55) {
     if (key == "HF")      return std::make_unique<HFFunctional>();
     if (key == "Mueller" || key == "BB") return std::make_unique<MuellerFunctional>();
+    if (key == "GU")      return std::make_unique<GUFunctional>();
+    if (key == "CGA")     return std::make_unique<CGAFunctional>();
     if (key == "Power")   return std::make_unique<PowerFunctional>(alpha);
     if (key == "BBC1")    return std::make_unique<BBC1Functional>();
+    // The Beta functional needs an explicit exponent; callers should use
+    // make_functional("Beta", beta) explicitly (alpha is reused as beta).
+    if (key == "Beta")    return std::make_unique<BetaFunctional>(alpha);
     return nullptr;
 }
 

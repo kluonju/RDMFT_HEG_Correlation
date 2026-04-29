@@ -33,7 +33,9 @@ struct Args {
         0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0
     };
     std::vector<std::string> funcs = {
-        "HF", "Mueller", "Power@0.55", "Power@0.58"
+        "HF", "Mueller", "GU", "CGA",
+        "Power@0.55", "Power@0.58",
+        "Beta@0.45", "Beta@0.55", "Beta@0.65"
     };
     int    N_grid = 401;
     double k_max_factor = 6.0;   // multiplicative factor on kF
@@ -46,7 +48,8 @@ void print_help() {
         "Usage: rdmft_heg [options]\n"
         "  --rs <list>          comma-separated rs values\n"
         "  --funcs <list>       comma-separated functionals\n"
-        "                       (HF, Mueller, BBC1, Power@<alpha>)\n"
+        "                       (HF, Mueller, GU, CGA, BBC1,\n"
+        "                        Power@<alpha>, Beta@<beta>)\n"
         "  --N <int>            #grid points (odd, default 401)\n"
         "  --kmax <float>       k_max in units of kF(min(rs)) (default 6)\n"
         "  --out <file>         output TSV path\n"
@@ -94,6 +97,10 @@ std::unique_ptr<Functional> make(const std::string& key) {
     if (key.rfind("Power@", 0) == 0) {
         double alpha = std::stod(key.substr(6));
         return std::make_unique<PowerFunctional>(alpha);
+    }
+    if (key.rfind("Beta@", 0) == 0) {
+        double beta = std::stod(key.substr(5));
+        return std::make_unique<BetaFunctional>(beta);
     }
     return make_functional(key);
 }
