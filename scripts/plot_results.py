@@ -18,6 +18,7 @@ COLORS = {
     "Mueller":       ("#21c7d6", "-",  "o"),
     "GU":            ("#1f77b4", ":",  "x"),
     "CGA":           ("#ff7f0e", "-",  "D"),
+    "GEO":           ("#000080", "-",  "*"),
     "BBC1":          ("#9b59b6", "-",  ">"),
     "Power(0.55)":   ("#d62728", "-",  "s"),
     "Power(0.58)":   ("#2ca02c", "-",  "o"),
@@ -83,6 +84,7 @@ def main():
         if name == "Mueller": return (1, 0, name)
         if name == "GU":      return (2, 0, name)
         if name == "CGA":     return (3, 0, name)
+        if name == "GEO":     return (3, 1, name)
         if name.startswith("Power("):
             try:
                 a = float(name[6:-1])
@@ -110,7 +112,7 @@ def main():
 
     ax.set_xlabel(r"$r_s$ (a.u.)")
     ax.set_ylabel(r"Correlation energy per electron $E_c$ (hartree)")
-    ax.set_title("RDMFT correlation energy of the HEG: GU, CGA and Beta functionals")
+    ax.set_title("RDMFT correlation energy of the HEG: GU, CGA, GEO and Beta functionals")
     ax.axhline(0, color="0.6", linewidth=0.6, linestyle="-")
     ax.grid(True, which="both", alpha=0.25)
     # Clip to a sensible window so over-correlating outliers don't dominate.
