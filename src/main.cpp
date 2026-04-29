@@ -33,7 +33,7 @@ struct Args {
         0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0
     };
     std::vector<std::string> funcs = {
-        "HF", "Mueller", "GU", "CGA",
+        "HF", "Mueller", "GU", "CGA", "GEO",
         "Power@0.55", "Power@0.58",
         "Beta@0.45", "Beta@0.55", "Beta@0.65"
     };
@@ -48,7 +48,7 @@ void print_help() {
         "Usage: rdmft_heg [options]\n"
         "  --rs <list>          comma-separated rs values\n"
         "  --funcs <list>       comma-separated functionals\n"
-        "                       (HF, Mueller, GU, CGA, BBC1,\n"
+        "                       (HF, Mueller, GU, CGA, BBC1, GEO,\n"
         "                        Power@<alpha>, Beta@<beta>)\n"
         "  --N <int>            #grid points (odd, default 401)\n"
         "  --kmax <float>       k_max in units of kF(min(rs)) (default 6)\n"
