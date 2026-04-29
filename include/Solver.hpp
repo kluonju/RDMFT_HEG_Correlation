@@ -179,67 +179,85 @@ inline double invert_dgbeta(double s, double beta) {
     return std::clamp(0.5 * (1.0 - u), 0.0, 1.0);
 }
 
-// Invert  f'(n) = s  for  f(n) = sqrt(n) * (1 - n)^{1/4}  on n in (0, 1).
+// Occupation update for the multi-power "GEO" kernel
 //
-// f'(n) = (2 - 3 n) / [ 4 sqrt(n) (1 - n)^{3/4} ]
+//   K(n_p, n_q) = c1 f1(n_p) f1(n_q) + c2 f2(n_p) f2(n_q) + c3 f3(n_p) f3(n_q)
+//   f1(n) = n,  f2(n) = sqrt(n),  f3(n) = n^{3/4}
 //
-// is monotonically decreasing from +infinity at n -> 0 to -infinity at n -> 1,
-// crossing zero at n = 2/3.  Hence the equation f'(n) = s has a unique
-// solution in (0, 1) for every real s, found here by bisection.
-inline double invert_dgeo(double s) {
-    auto df = [](double n) {
-        const double eps = 1.0e-14;
-        const double nc  = (n < eps) ? eps
-                          : (n > 1.0 - eps ? 1.0 - eps : n);
-        return (2.0 - 3.0 * nc) /
-               (4.0 * std::sqrt(nc) * std::pow(1.0 - nc, 0.75));
-    };
-    // df is monotonically decreasing, so bracket via [eps, 1-eps].
-    const double eps = 1.0e-10;
-    double lo = eps;          // df(lo)  -> +infinity
-    double hi = 1.0 - eps;    // df(hi)  -> -infinity
-    // Saturate if outside the bracket (numerically unreachable, but safe).
-    if (s >= df(lo)) return lo;
-    if (s <= df(hi)) return hi;
-    for (int it = 0; it < 80; ++it) {
-        const double mid = 0.5 * (lo + hi);
-        const double fm  = df(mid);
-        // df decreasing: if df(mid) > s the root is to the right, else left.
-        if (fm > s) lo = mid; else hi = mid;
-        if (hi - lo < 1.0e-12) break;
-    }
-    return std::clamp(0.5 * (lo + hi), 0.0, 1.0);
-}
-
-// Occupation update for a generic factorizable kernel K(n_i, n_j) = f(n_i) f(n_j)
-// whose derivative f'(n) is monotonic on (0, 1) but not closed-form invertible.
-// The Euler-Lagrange equation reads
+// with the GEO weights (c1, c2, c3) = (1/4, 1/4, 1/2).  Defining
 //
-//     f'(n_i) U_i = pi k_i (k_i^2/2 - mu),    U_i = sum_j W_{ij} k_j f(n_j),
+//   U_alpha,i = sum_j W_{ij} k_j f_alpha(n_j),
 //
-// solved here for n_i via the user-supplied 1-D inverter `invert_df`.  When
-// |U_i| is too small (e.g. before the SCF has built up a non-trivial f(n)
-// distribution from a smeared start) we fall back to the HF step rule.
-template <class Inverter>
+// the Euler-Lagrange equation reads
+//
+//   c1 f1'(n_i) U1_i + c2 f2'(n_i) U2_i + c3 f3'(n_i) U3_i
+//                                       = pi k_i (k_i^2/2 - mu) =: R_i.
+//
+// f_alpha'(n) = alpha n^{alpha - 1} is strictly decreasing in n on (0, 1)
+// for alpha in {1/2, 3/4} and constant for alpha = 1.  Hence whenever the
+// U_alpha,i are non-negative the left-hand side is a monotonically
+// decreasing function of n_i and the equation has a unique solution in
+// [0, 1], found here by bisection.  When all U_alpha vanish (e.g. an HF
+// step initial guess at the very first iteration) we fall back to the HF
+// step rule R_i >= 0 -> n_i = 0, R_i < 0 -> n_i = 1.
 inline std::vector<double>
-update_occupations_factor_general(double mu,
-                                  const std::vector<double>& U,
-                                  const Grid& g,
-                                  Inverter invert_df) {
-    constexpr double pi = M_PI;
-    const std::size_t N = g.n();
+update_occupations_geo(double mu,
+                       const std::vector<double>& U1,
+                       const std::vector<double>& U2,
+                       const std::vector<double>& U3,
+                       const Grid& g) {
+    constexpr double pi   = M_PI;
+    constexpr double c1   = 0.25;
+    constexpr double c2   = 0.25;
+    constexpr double c3   = 0.50;
+    const std::size_t N   = g.n();
+    const double tiny     = 1.0e-14;
     std::vector<double> n(N, 0.0);
-    const double tiny = 1.0e-14;
+
     for (std::size_t i = 0; i < N; ++i) {
         const double k = g.k[i];
         if (k <= 0.0) { n[i] = 1.0; continue; }
         const double R = pi * k * (0.5 * k * k - mu);
-        if (std::abs(U[i]) < tiny) {
-            // No exchange potential yet: HF-like step rule (eps_i = k^2/2).
+
+        const double u1 = U1[i];
+        const double u2 = U2[i];
+        const double u3 = U3[i];
+        const double sumU = std::abs(u1) + std::abs(u2) + std::abs(u3);
+        if (sumU < tiny) {
             n[i] = (R >= 0.0) ? 0.0 : 1.0;
             continue;
         }
-        n[i] = invert_df(R / U[i]);
+
+        // LHS(n) = c1 * 1 * U1
+        //       + c2 * (1/(2 sqrt n))      * U2
+        //       + c3 * (3/(4 n^{1/4}))     * U3
+        // Strictly decreasing in n for n in (0, 1) when U2, U3 >= 0.
+        auto lhs = [&](double nn) {
+            const double nc = std::clamp(nn, 1.0e-14, 1.0);
+            const double t1 = c1 * u1;
+            const double t2 = c2 * 0.5  / std::sqrt(nc)         * u2;
+            const double t3 = c3 * 0.75 * std::pow(nc, -0.25)   * u3;
+            return t1 + t2 + t3;
+        };
+
+        const double eps = 1.0e-12;
+        const double lo_n = eps;
+        const double hi_n = 1.0;
+        const double L_lo = lhs(lo_n);  // largest value
+        const double L_hi = lhs(hi_n);  // smallest value
+        // Saturate on the appropriate boundary if the EL equation has no
+        // interior solution.  Note LHS is decreasing in n, so:
+        //   R >= L_lo  -> push n down  -> n = 0
+        //   R <= L_hi  -> push n up    -> n = 1
+        if (R >= L_lo) { n[i] = 0.0; continue; }
+        if (R <= L_hi) { n[i] = 1.0; continue; }
+        double a = lo_n, b = hi_n;
+        for (int it = 0; it < 80; ++it) {
+            const double m = 0.5 * (a + b);
+            if (lhs(m) > R) a = m; else b = m;
+            if (b - a < 1.0e-12) break;
+        }
+        n[i] = std::clamp(0.5 * (a + b), 0.0, 1.0);
     }
     return n;
 }
@@ -355,10 +373,9 @@ solve_rdmft(double rs,
     const BetaFunctional* beta_f = dynamic_cast<const BetaFunctional*>(&F);
     const bool additive = (cga != nullptr) || (beta_f != nullptr);
 
-    // Detect the GEO functional (factorizable but with a non-power f, so the
-    // Euler-Lagrange step uses a numerical 1-D inverter of f').
+    // GEO uses a non-factorizable multi-power kernel; it is solved via the
+    // generic projected-gradient branch below (no special-case here).
     const GEOFunctional*  geo  = dynamic_cast<const GEOFunctional*>(&F);
-    const bool factor_general = (geo != nullptr);
 
     double alpha = 1.0;
     if (pf)        alpha = pf->alpha();
@@ -376,7 +393,10 @@ solve_rdmft(double rs,
     // the endpoints, so we deliberately seed a broad range of fractionally-
     // occupied initial conditions.  For factorized and generic functionals
     // one start (sharp step) is enough.
-    const std::vector<std::pair<bool, double>> starts = (additive || factor_general)
+    // Smeared multi-start helps non-factorizable kernels (additive CGA / Beta
+    // and the multi-power GEO) escape the trivial HF-step fixed point.
+    const bool needs_multistart = additive || (geo != nullptr);
+    const std::vector<std::pair<bool, double>> starts = needs_multistart
         ? std::vector<std::pair<bool, double>>{
               {false, 0.05}, {false, 0.10}, {false, 0.20},
               {false, 0.40}, {false, 0.80}, {false, 1.50}}
@@ -435,28 +455,29 @@ solve_rdmft(double rs,
             auto U = compute_U(n);
             mu = bisect_mu_factorized(U);
             n_target = update_occupations_power(alpha, mu, U, g);
-        } else if (factor_general) {
-            // Factorizable kernel K(n_i, n_j) = f(n_i) f(n_j) but with f' not
-            // analytically invertible.  Build U_i with the functional's own f
-            // and run a 1-D bisection inverter for n_i at every grid point.
-            auto U = compute_U(n);
-            auto invert_df = [&](double s) -> double {
-                if (geo) return invert_dgeo(s);
-                return 0.5;
-            };
-            auto bisect_mu_factor_general = [&]() {
+        } else if (geo) {
+            // Multi-power GEO kernel: build U1, U2, U3 with f1(n) = n,
+            // f2(n) = sqrt(n), f3(n) = n^{3/4}, then solve the EL equation
+            // pointwise via 1-D bisection (see update_occupations_geo).
+            auto f1 = [](double nn) { return nn; };
+            auto f2 = [](double nn) { return nn > 0.0 ? std::sqrt(nn) : 0.0; };
+            auto f3 = [](double nn) { return nn > 0.0 ? std::pow(nn, 0.75) : 0.0; };
+            auto U1 = compute_U_with(n, g, W, f1);
+            auto U2 = compute_U_with(n, g, W, f2);
+            auto U3 = compute_U_with(n, g, W, f3);
+
+            auto bisect_mu_geo = [&]() {
                 double lo = opt.mu_lo, hi = opt.mu_hi;
                 for (int b = 0; b < opt.bisect_iter; ++b) {
                     double m = 0.5 * (lo + hi);
-                    auto n_try = update_occupations_factor_general(
-                        m, U, g, invert_df);
+                    auto n_try = update_occupations_geo(m, U1, U2, U3, g);
                     if (density_of(n_try) > rho_target) hi = m;
                     else                                 lo = m;
                 }
                 return 0.5 * (lo + hi);
             };
-            mu = bisect_mu_factor_general();
-            n_target = update_occupations_factor_general(mu, U, g, invert_df);
+            mu = bisect_mu_geo();
+            n_target = update_occupations_geo(mu, U1, U2, U3, g);
         } else if (additive) {
             // Additive kernel K = n_i n_j + g(n_i) g(n_j): closed-form update
             // for n_i once mu is found by bisection.  We use a soft floor on

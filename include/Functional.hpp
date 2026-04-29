@@ -236,42 +236,58 @@ private:
     }
 };
 
-// GEO functional (this work).  "Geometric-mean" factorizable kernel
+// GEO functional (this work).  Multi-power "geometric-mean" kernel built as
+// the equally-normalized sum
 //
-//     f(n) = sqrt(n) * (1 - n)^{1/4},
+//     K_GEO(n_p, n_q) = [ n_p n_q  +  (n_p n_q)^{1/2}
+//                       + 2 * (n_p n_q)^{3/4} ] / 4
+//                     = [ f1(n_p) f1(n_q) + f2(n_p) f2(n_q)
+//                       + 2 f3(n_p) f3(n_q) ] / 4
 //
-// so that the two-body kernel reads
+// with f1(n) = n,  f2(n) = sqrt(n),  f3(n) = n^{3/4}.  This blends the HF
+// (alpha = 1), Mueller (alpha = 1/2) and Power(3/4) factorizable kernels
+// with weights 1 : 1 : 2, normalized so that K_GEO(1, 1) = 1 (matching HF
+// at saturation).  Notable properties:
 //
-//     K_GEO(n_i, n_j) = (n_i n_j)^{1/2}  *  [ (1 - n_i)(1 - n_j) ]^{1/4}.
-//
-// This combines the Mueller-like square-root piece (n_i n_j)^{1/2} with an
-// "exchange-hole" prefactor [(1 - n_i)(1 - n_j)]^{1/4} that suppresses the
-// kernel near full / empty occupation.  Notable properties:
-//
-//   * K_GEO(0, n) = K_GEO(n, 0) = 0  and  K_GEO(1, n) = K_GEO(n, 1) = 0,
-//     so empty and saturated channels do not contribute to E_xc.
-//   * f(n) is maximized at n = 2/3 with f^2 = n (1 - n)^{1/2} = (4/(3 sqrt 3)),
-//     so the kernel is most active for fractional occupations close to 2/3.
-//   * For step occupations (n_i in {0, 1}) the kernel reduces to zero,
-//     i.e. GEO recovers the kinetic-only ground state in the HF step
-//     limit and the correlation contribution must come from a smooth
-//     fractional occupation.
-//
-// The kernel factorizes, so f / df below are sufficient.
+//   * Symmetric: K(n_p, n_q) = K(n_q, n_p).
+//   * Vanishes at n_p = 0 (or n_q = 0) and equals 1 at n_p = n_q = 1, so it
+//     reproduces the HF saturation limit while adding sqrt-type and 3/4-type
+//     correlation contributions in the interior.
+//   * Not factorizable, so we override `kernel` / `kernel_grad` rather than
+//     supplying a single f / df.  The base-class f / df are still defined
+//     (they default to the Mueller form) so that the abstract interface is
+//     satisfied; the energy and gradient evaluators only call `kernel` and
+//     `kernel_grad`.
 class GEOFunctional : public Functional {
 public:
     std::string name() const override { return "GEO"; }
     double f(double n) const override {
-        if (n <= 0.0 || n >= 1.0) return 0.0;
-        return std::sqrt(n) * std::pow(1.0 - n, 0.25);
+        return n > 0.0 ? std::sqrt(n) : 0.0;
     }
     double df(double n) const override {
-        // f'(n) = (2 - 3 n) / [ 4 sqrt(n) (1 - n)^{3/4} ]
-        const double eps = 1.0e-12;
-        const double nc  = (n < eps) ? eps
-                          : (n > 1.0 - eps ? 1.0 - eps : n);
-        return (2.0 - 3.0 * nc) /
-               (4.0 * std::sqrt(nc) * std::pow(1.0 - nc, 0.75));
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+    double kernel(double ni, double nj) const override {
+        const double p = ni * nj;
+        if (p <= 0.0) return 0.0;
+        const double s12 = std::sqrt(p);            // (n_p n_q)^{1/2}
+        const double s34 = std::pow(p, 0.75);       // (n_p n_q)^{3/4}
+        return 0.25 * (p + s12 + 2.0 * s34);
+    }
+    double kernel_grad(double ni, double nj) const override {
+        // d K / d n_i with n_j held fixed.  Differentiate term by term:
+        //   d/dn_i [ n_i n_j ]                = n_j
+        //   d/dn_i [ (n_i n_j)^{1/2} ]        = (1/2) n_j (n_i n_j)^{-1/2}
+        //                                     = (1/2) sqrt(n_j / n_i)
+        //   d/dn_i [ 2 (n_i n_j)^{3/4} ]      = (3/2) n_j (n_i n_j)^{-1/4}
+        const double eps = 1.0e-14;
+        const double nic = (ni > eps) ? ni : eps;
+        const double njc = (nj > eps) ? nj : eps;
+        const double pc  = nic * njc;
+        const double ds12 = 0.5 * std::sqrt(njc / nic);
+        const double ds34 = 1.5 * njc * std::pow(pc, -0.25);
+        return 0.25 * (nj + ds12 + ds34);
     }
 };
 
