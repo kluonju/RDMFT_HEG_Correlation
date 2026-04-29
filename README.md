@@ -55,18 +55,17 @@ E_xc/V = -(1 / (2π³)) ∬₀^∞ k k' K(n(k), n(k'))
 
   为 HF 交换加上一个空穴/统计相关贡献，对高密度 HEG 表现良好。
 
-* **GEO**（本项目新增）：几何均值型可分核
+* **GEO**（本项目新增）：多次幂"几何均值"型核
 
   ```
-  K_GEO(n_i, n_j) = (n_i n_j)^{1/2} * [ (1 - n_i)(1 - n_j) ]^{1/4}
-                  = f(n_i) f(n_j),    f(n) = sqrt(n) * (1 - n)^{1/4}
+  K_GEO(n_p, n_q) = [ n_p n_q + (n_p n_q)^{1/2} + 2 (n_p n_q)^{3/4} ] / 4
   ```
 
-  其中 `f` 在 `n = 0` 与 `n = 1` 处都为 0，并在 `n = 2/3` 取极大；
-  因此 `K_GEO` 抑制饱和占据通道的贡献，对小 `r_s`（高密度）下
-  HF 阶跃占据近似准确的极限给出微弱关联，而在大 `r_s` 处过渡为
-  Mueller 量级的关联强度。该核可分离但 `f'` 不可显式反演，
-  Euler–Lagrange 方程在内层用一维二分实现。
+  即 HF 核 (`alpha = 1`)、Mueller 核 (`alpha = 1/2`) 与 Power(3/4) 核
+  以权重 `1 : 1 : 2` 等比例混合，并归一使 `K_GEO(1, 1) = 1`（与 HF 的
+  饱和极限一致）。该核非可分，但 Euler–Lagrange 方程的左侧在 `n_i` 上
+  是单调递减函数（前提是 `U_alpha,i >= 0`），因此可对每个网格点用
+  一维二分把 `n_i` 反解出来；外层照常用 `mu` 二分满足密度约束。
 
 * **Beta**：将 CGA 的空穴部分推广为可调指数
 
@@ -145,8 +144,8 @@ QMC 参考由 PW92 拟合（`include/QMC.hpp`）给出。
 │   └── QMC.hpp              # PW92 关联能参数化
 ├── src/main.cpp             # 命令行驱动程序
 ├── tests/test_hf_exchange.cpp
-├── scripts/plot_results.py  # 用 data/results.tsv 画图
-├── data/                    # 生成的 .tsv 结果
+├── scripts/plot_results.py  # 读取 data/*.tsv 画图
+├── data/                    # 每个泛函一个 .tsv 文件（HF.tsv / GEO.tsv / ...）
 ├── figures/                 # 生成的对比图
 ├── Makefile                 # 简单 make 构建
 └── CMakeLists.txt           # CMake 构建（含单元测试）
@@ -164,9 +163,18 @@ QMC 参考由 PW92 拟合（`include/QMC.hpp`）给出。
 # 选项 A：Makefile（最简单）
 make            # 编译 build/rdmft_heg 与 build/test_hf_exchange
 make test       # 运行单元测试
-make run        # 默认 r_s 扫描，写入 data/results.tsv
-make plot       # 生成 figures/correlation_energy.png
+make run        # 增量扫描：仅运行 data/<name>.tsv 不存在的泛函
+make rerun      # 强制重算（--force）所有泛函
+make geo        # 仅重算 GEO -> data/GEO.tsv
+make plot       # 读取 data/*.tsv 生成 figures/correlation_energy.png
+make clean-data # 删除所有 data/*.tsv，下一次 make run 会重新跑全部
 ```
+
+每个泛函的结果单独写到 `data/<name>.tsv`（例如 `data/HF.tsv`、
+`data/GEO.tsv`、`data/Power_0.55.tsv`）。这样新增/修改一个泛函时只需
+重跑该泛函（`make geo` 或 `./build/rdmft_heg --funcs <name> --force`），
+无需重复跑其他泛函的全部 `r_s` 扫描。`scripts/plot_results.py` 会自动
+读取 `data/` 目录下所有 `*.tsv` 并叠在同一张图上。
 
 ```bash
 # 选项 B：CMake
@@ -184,14 +192,15 @@ ctest --test-dir build --output-on-failure
 ```
 rdmft_heg [选项]
   --rs   <列表>       逗号分隔的 r_s 值，如 0.5,1,2,5
-  --funcs <列表>      逗号分隔的泛函，如 HF,Mueller,Power@0.55,Power@0.58,BBC1
+  --funcs <列表>      逗号分隔的泛函，如 HF,Mueller,Power@0.55,Power@0.58,GEO
   --N    <整数>       k 方向网格点数（奇数，默认 401）
   --kmax <浮点>       k_max 取 (factor × k_F(r_s))，默认 6
-  --out  <文件>       输出 .tsv 路径，默认 data/results.tsv
+  --out-dir <目录>    每个泛函一个 .tsv 文件的输出目录，默认 data
+  --force             覆盖已存在的 .tsv（默认跳过）
   --verbose           打印自洽迭代日志
 ```
 
-输出 .tsv 的列依次为：
+输出每个 `data/<name>.tsv` 的列依次为：
 
 ```
 rs  functional  E_per_N  Ec_per_N  Ec_QMC  T/N  Exc/N  mu  rho_err  converged  iters
@@ -231,6 +240,16 @@ if (key == "MyFunc") return std::make_unique<MyFunctional>();
 如要使用 Power 族的解析占据更新，只要让你的类继承 `PowerFunctional`
 （覆盖 `name()`），或修改 `Solver::solve_rdmft` 中的 `dynamic_cast`
 分支判断。
+
+加了新泛函之后只需要跑这一项即可，不必重算其他泛函：
+
+```bash
+# 把 MyFunc 加到 Makefile 的 FUNCS 列表（或直接传 --funcs MyFunc）
+make run                        # 增量：只跑 data/MyFunc.tsv 还不存在的项
+# 或者只重算单个：
+./build/rdmft_heg --funcs MyFunc --force --out-dir data
+make plot                       # 自动 pick up data/MyFunc.tsv 一并入图
+```
 
 ---
 
