@@ -179,6 +179,71 @@ inline double invert_dgbeta(double s, double beta) {
     return std::clamp(0.5 * (1.0 - u), 0.0, 1.0);
 }
 
+// Invert  f'(n) = s  for  f(n) = sqrt(n) * (1 - n)^{1/4}  on n in (0, 1).
+//
+// f'(n) = (2 - 3 n) / [ 4 sqrt(n) (1 - n)^{3/4} ]
+//
+// is monotonically decreasing from +infinity at n -> 0 to -infinity at n -> 1,
+// crossing zero at n = 2/3.  Hence the equation f'(n) = s has a unique
+// solution in (0, 1) for every real s, found here by bisection.
+inline double invert_dgeo(double s) {
+    auto df = [](double n) {
+        const double eps = 1.0e-14;
+        const double nc  = (n < eps) ? eps
+                          : (n > 1.0 - eps ? 1.0 - eps : n);
+        return (2.0 - 3.0 * nc) /
+               (4.0 * std::sqrt(nc) * std::pow(1.0 - nc, 0.75));
+    };
+    // df is monotonically decreasing, so bracket via [eps, 1-eps].
+    const double eps = 1.0e-10;
+    double lo = eps;          // df(lo)  -> +infinity
+    double hi = 1.0 - eps;    // df(hi)  -> -infinity
+    // Saturate if outside the bracket (numerically unreachable, but safe).
+    if (s >= df(lo)) return lo;
+    if (s <= df(hi)) return hi;
+    for (int it = 0; it < 80; ++it) {
+        const double mid = 0.5 * (lo + hi);
+        const double fm  = df(mid);
+        // df decreasing: if df(mid) > s the root is to the right, else left.
+        if (fm > s) lo = mid; else hi = mid;
+        if (hi - lo < 1.0e-12) break;
+    }
+    return std::clamp(0.5 * (lo + hi), 0.0, 1.0);
+}
+
+// Occupation update for a generic factorizable kernel K(n_i, n_j) = f(n_i) f(n_j)
+// whose derivative f'(n) is monotonic on (0, 1) but not closed-form invertible.
+// The Euler-Lagrange equation reads
+//
+//     f'(n_i) U_i = pi k_i (k_i^2/2 - mu),    U_i = sum_j W_{ij} k_j f(n_j),
+//
+// solved here for n_i via the user-supplied 1-D inverter `invert_df`.  When
+// |U_i| is too small (e.g. before the SCF has built up a non-trivial f(n)
+// distribution from a smeared start) we fall back to the HF step rule.
+template <class Inverter>
+inline std::vector<double>
+update_occupations_factor_general(double mu,
+                                  const std::vector<double>& U,
+                                  const Grid& g,
+                                  Inverter invert_df) {
+    constexpr double pi = M_PI;
+    const std::size_t N = g.n();
+    std::vector<double> n(N, 0.0);
+    const double tiny = 1.0e-14;
+    for (std::size_t i = 0; i < N; ++i) {
+        const double k = g.k[i];
+        if (k <= 0.0) { n[i] = 1.0; continue; }
+        const double R = pi * k * (0.5 * k * k - mu);
+        if (std::abs(U[i]) < tiny) {
+            // No exchange potential yet: HF-like step rule (eps_i = k^2/2).
+            n[i] = (R >= 0.0) ? 0.0 : 1.0;
+            continue;
+        }
+        n[i] = invert_df(R / U[i]);
+    }
+    return n;
+}
+
 // Closed-form occupation update for kernels with the additive structure
 //
 //     K(n_i, n_j) = n_i n_j + g(n_i) g(n_j),
@@ -290,6 +355,11 @@ solve_rdmft(double rs,
     const BetaFunctional* beta_f = dynamic_cast<const BetaFunctional*>(&F);
     const bool additive = (cga != nullptr) || (beta_f != nullptr);
 
+    // Detect the GEO functional (factorizable but with a non-power f, so the
+    // Euler-Lagrange step uses a numerical 1-D inverter of f').
+    const GEOFunctional*  geo  = dynamic_cast<const GEOFunctional*>(&F);
+    const bool factor_general = (geo != nullptr);
+
     double alpha = 1.0;
     if (pf)        alpha = pf->alpha();
     else if (mu_f) alpha = 0.5;
@@ -306,7 +376,7 @@ solve_rdmft(double rs,
     // the endpoints, so we deliberately seed a broad range of fractionally-
     // occupied initial conditions.  For factorized and generic functionals
     // one start (sharp step) is enough.
-    const std::vector<std::pair<bool, double>> starts = additive
+    const std::vector<std::pair<bool, double>> starts = (additive || factor_general)
         ? std::vector<std::pair<bool, double>>{
               {false, 0.05}, {false, 0.10}, {false, 0.20},
               {false, 0.40}, {false, 0.80}, {false, 1.50}}
@@ -365,6 +435,28 @@ solve_rdmft(double rs,
             auto U = compute_U(n);
             mu = bisect_mu_factorized(U);
             n_target = update_occupations_power(alpha, mu, U, g);
+        } else if (factor_general) {
+            // Factorizable kernel K(n_i, n_j) = f(n_i) f(n_j) but with f' not
+            // analytically invertible.  Build U_i with the functional's own f
+            // and run a 1-D bisection inverter for n_i at every grid point.
+            auto U = compute_U(n);
+            auto invert_df = [&](double s) -> double {
+                if (geo) return invert_dgeo(s);
+                return 0.5;
+            };
+            auto bisect_mu_factor_general = [&]() {
+                double lo = opt.mu_lo, hi = opt.mu_hi;
+                for (int b = 0; b < opt.bisect_iter; ++b) {
+                    double m = 0.5 * (lo + hi);
+                    auto n_try = update_occupations_factor_general(
+                        m, U, g, invert_df);
+                    if (density_of(n_try) > rho_target) hi = m;
+                    else                                 lo = m;
+                }
+                return 0.5 * (lo + hi);
+            };
+            mu = bisect_mu_factor_general();
+            n_target = update_occupations_factor_general(mu, U, g, invert_df);
         } else if (additive) {
             // Additive kernel K = n_i n_j + g(n_i) g(n_j): closed-form update
             // for n_i once mu is found by bisection.  We use a soft floor on

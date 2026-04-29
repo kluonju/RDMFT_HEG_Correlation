@@ -236,6 +236,45 @@ private:
     }
 };
 
+// GEO functional (this work).  "Geometric-mean" factorizable kernel
+//
+//     f(n) = sqrt(n) * (1 - n)^{1/4},
+//
+// so that the two-body kernel reads
+//
+//     K_GEO(n_i, n_j) = (n_i n_j)^{1/2}  *  [ (1 - n_i)(1 - n_j) ]^{1/4}.
+//
+// This combines the Mueller-like square-root piece (n_i n_j)^{1/2} with an
+// "exchange-hole" prefactor [(1 - n_i)(1 - n_j)]^{1/4} that suppresses the
+// kernel near full / empty occupation.  Notable properties:
+//
+//   * K_GEO(0, n) = K_GEO(n, 0) = 0  and  K_GEO(1, n) = K_GEO(n, 1) = 0,
+//     so empty and saturated channels do not contribute to E_xc.
+//   * f(n) is maximized at n = 2/3 with f^2 = n (1 - n)^{1/2} = (4/(3 sqrt 3)),
+//     so the kernel is most active for fractional occupations close to 2/3.
+//   * For step occupations (n_i in {0, 1}) the kernel reduces to zero,
+//     i.e. GEO recovers the kinetic-only ground state in the HF step
+//     limit and the correlation contribution must come from a smooth
+//     fractional occupation.
+//
+// The kernel factorizes, so f / df below are sufficient.
+class GEOFunctional : public Functional {
+public:
+    std::string name() const override { return "GEO"; }
+    double f(double n) const override {
+        if (n <= 0.0 || n >= 1.0) return 0.0;
+        return std::sqrt(n) * std::pow(1.0 - n, 0.25);
+    }
+    double df(double n) const override {
+        // f'(n) = (2 - 3 n) / [ 4 sqrt(n) (1 - n)^{3/4} ]
+        const double eps = 1.0e-12;
+        const double nc  = (n < eps) ? eps
+                          : (n > 1.0 - eps ? 1.0 - eps : n);
+        return (2.0 - 3.0 * nc) /
+               (4.0 * std::sqrt(nc) * std::pow(1.0 - nc, 0.75));
+    }
+};
+
 // BBC1 (Gritsenko, Pernal, Baerends 2005).  In a plane-wave basis it reduces
 // to using the Mueller kernel everywhere except that pairs of "weakly
 // occupied" orbitals (n_i, n_j < 1/2 in the paramagnetic case) get a sign
@@ -293,6 +332,7 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     if (key == "CGA")     return std::make_unique<CGAFunctional>();
     if (key == "Power")   return std::make_unique<PowerFunctional>(alpha);
     if (key == "BBC1")    return std::make_unique<BBC1Functional>();
+    if (key == "GEO")     return std::make_unique<GEOFunctional>();
     // The Beta functional needs an explicit exponent; callers should use
     // make_functional("Beta", beta) explicitly (alpha is reused as beta).
     if (key == "Beta")    return std::make_unique<BetaFunctional>(alpha);
