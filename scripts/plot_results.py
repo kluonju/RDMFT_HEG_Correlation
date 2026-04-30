@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
-"""Plot RDMFT correlation energies vs rs from data/results.tsv.
+"""Plot RDMFT correlation energies vs rs from per-functional TSVs.
 
-Reproduces the typical comparison plot of E_c(r_s) against the QMC reference
-for HEG using HF (zero), Mueller, BBC1 and the Power functional with several
-alphas, plus the PW92 QMC parameterization.
+Reads every ``*.tsv`` file under ``--in`` (a directory) and overlays the
+correlation energy curves on a single figure together with the PW92 QMC
+reference.  The directory layout matches the rdmft_heg driver:
+
+    data/
+        HF.tsv
+        Mueller.tsv
+        GEO.tsv
+        Power_0.55.tsv
+        ...
+
+For backwards compatibility ``--in`` may also point at a single ``.tsv``
+file (the previous monolithic ``data/results.tsv`` layout) and in that case
+all rows are read from that one file.
 """
 import argparse
 from pathlib import Path
@@ -18,6 +29,7 @@ COLORS = {
     "Mueller":       ("#21c7d6", "-",  "o"),
     "GU":            ("#1f77b4", ":",  "x"),
     "CGA":           ("#ff7f0e", "-",  "D"),
+    "GEO":           ("#000080", "-",  "*"),
     "BBC1":          ("#9b59b6", "-",  ">"),
     "Power(0.55)":   ("#d62728", "-",  "s"),
     "Power(0.58)":   ("#2ca02c", "-",  "o"),
@@ -27,62 +39,88 @@ COLORS = {
 }
 
 
-def read_tsv(path: Path):
-    rows = []
+def parse_tsv(path: Path):
+    """Yield (rs, fn, ec, ec_qmc) tuples from a single TSV file."""
     with path.open() as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
             parts = line.split("\t")
-            rs  = float(parts[0])
-            fn  = parts[1]
-            ec  = float(parts[3])
-            ecq = float(parts[4])
-            rows.append((rs, fn, ec, ecq))
-    return rows
+            if len(parts) < 5:
+                continue
+            try:
+                rs  = float(parts[0])
+                fn  = parts[1]
+                ec  = float(parts[3])
+                ecq = float(parts[4])
+            except ValueError:
+                continue
+            yield rs, fn, ec, ecq
+
+
+def collect_rows(in_path: Path):
+    """Read all rows from either a directory of *.tsv or a single TSV."""
+    if in_path.is_dir():
+        files = sorted(in_path.glob("*.tsv"))
+        if not files:
+            raise SystemExit(f"No .tsv files in {in_path}/")
+        for f in files:
+            yield from parse_tsv(f)
+    else:
+        yield from parse_tsv(in_path)
+
+
+def pretty_name(fn: str) -> str:
+    """Collapse internal labels like 'Power(alpha=0.550000)' to 'Power(0.55)'."""
+    if fn.startswith("Power(alpha="):
+        alpha = fn.split("=")[1].rstrip(")")
+        try:
+            return f"Power({float(alpha):.2f})"
+        except ValueError:
+            return fn
+    if fn.startswith("Beta(beta="):
+        beta = fn.split("=")[1].rstrip(")")
+        try:
+            return f"Beta({float(beta):.2f})"
+        except ValueError:
+            return fn
+    return fn
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in",  dest="in_path",  default="data/results.tsv")
-    ap.add_argument("--out", dest="out_path", default="figures/correlation_energy.png")
+    ap.add_argument("--in",  dest="in_path",  default="data",
+                    help="Directory of per-functional .tsv files "
+                         "(or a single .tsv).  Default: data")
+    ap.add_argument("--out", dest="out_path",
+                    default="figures/correlation_energy.png")
     args = ap.parse_args()
 
-    rows = read_tsv(Path(args.in_path))
+    in_path = Path(args.in_path)
 
     series: dict[str, list[tuple[float, float]]] = {}
     qmc_pairs: list[tuple[float, float]] = []
-    for rs, fn, ec, ecq in rows:
-        # Pretty short names: collapse "Power(alpha=0.550000)" ->
-        # "Power(0.55)" and "Beta(beta=0.400)" -> "Beta(0.40)" so the legend
-        # stays compact and the COLORS lookup hits.
-        if fn.startswith("Power(alpha="):
-            alpha = fn.split("=")[1].rstrip(")")
-            try:
-                fn = f"Power({float(alpha):.2f})"
-            except ValueError:
-                pass
-        elif fn.startswith("Beta(beta="):
-            beta = fn.split("=")[1].rstrip(")")
-            try:
-                fn = f"Beta({float(beta):.2f})"
-            except ValueError:
-                pass
+    for rs, fn, ec, ecq in collect_rows(in_path):
+        fn = pretty_name(fn)
         series.setdefault(fn, []).append((rs, ec))
         qmc_pairs.append((rs, ecq))
+
+    if not series:
+        raise SystemExit(f"No usable data points in {in_path}")
 
     qmc = sorted(set(qmc_pairs))
     qmc_rs = [p[0] for p in qmc]
     qmc_e  = [p[1] for p in qmc]
 
-    # Group functionals so the legend reads HF/Mueller/GU/CGA/Power.../Beta...
+    # Group functionals so the legend reads HF/Mueller/GU/CGA/GEO/Power.../Beta...
     # rather than alphabetical, which scatters families.
     def order_key(name: str) -> tuple:
         if name == "HF":      return (0, 0, name)
         if name == "Mueller": return (1, 0, name)
         if name == "GU":      return (2, 0, name)
         if name == "CGA":     return (3, 0, name)
+        if name == "GEO":     return (3, 1, name)
         if name.startswith("Power("):
             try:
                 a = float(name[6:-1])
@@ -110,10 +148,9 @@ def main():
 
     ax.set_xlabel(r"$r_s$ (a.u.)")
     ax.set_ylabel(r"Correlation energy per electron $E_c$ (hartree)")
-    ax.set_title("RDMFT correlation energy of the HEG: GU, CGA and Beta functionals")
+    ax.set_title("RDMFT correlation energy of the HEG: GU, CGA, GEO and Beta functionals")
     ax.axhline(0, color="0.6", linewidth=0.6, linestyle="-")
     ax.grid(True, which="both", alpha=0.25)
-    # Clip to a sensible window so over-correlating outliers don't dominate.
     ax.set_ylim(-0.20, 0.02)
     ax.legend(loc="lower right", fontsize=9, ncol=2, framealpha=0.92)
 

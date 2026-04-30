@@ -179,6 +179,89 @@ inline double invert_dgbeta(double s, double beta) {
     return std::clamp(0.5 * (1.0 - u), 0.0, 1.0);
 }
 
+// Occupation update for the multi-power "GEO" kernel
+//
+//   K(n_p, n_q) = c1 f1(n_p) f1(n_q) + c2 f2(n_p) f2(n_q) + c3 f3(n_p) f3(n_q)
+//   f1(n) = n,  f2(n) = sqrt(n),  f3(n) = n^{3/4}
+//
+// with the GEO weights (c1, c2, c3) = (1/4, 1/4, 1/2).  Defining
+//
+//   U_alpha,i = sum_j W_{ij} k_j f_alpha(n_j),
+//
+// the Euler-Lagrange equation reads
+//
+//   c1 f1'(n_i) U1_i + c2 f2'(n_i) U2_i + c3 f3'(n_i) U3_i
+//                                       = pi k_i (k_i^2/2 - mu) =: R_i.
+//
+// f_alpha'(n) = alpha n^{alpha - 1} is strictly decreasing in n on (0, 1)
+// for alpha in {1/2, 3/4} and constant for alpha = 1.  Hence whenever the
+// U_alpha,i are non-negative the left-hand side is a monotonically
+// decreasing function of n_i and the equation has a unique solution in
+// [0, 1], found here by bisection.  When all U_alpha vanish (e.g. an HF
+// step initial guess at the very first iteration) we fall back to the HF
+// step rule R_i >= 0 -> n_i = 0, R_i < 0 -> n_i = 1.
+inline std::vector<double>
+update_occupations_geo(double mu,
+                       const std::vector<double>& U1,
+                       const std::vector<double>& U2,
+                       const std::vector<double>& U3,
+                       const Grid& g) {
+    constexpr double pi   = M_PI;
+    constexpr double c1   = 0.25;
+    constexpr double c2   = 0.25;
+    constexpr double c3   = 0.50;
+    const std::size_t N   = g.n();
+    const double tiny     = 1.0e-14;
+    std::vector<double> n(N, 0.0);
+
+    for (std::size_t i = 0; i < N; ++i) {
+        const double k = g.k[i];
+        if (k <= 0.0) { n[i] = 1.0; continue; }
+        const double R = pi * k * (0.5 * k * k - mu);
+
+        const double u1 = U1[i];
+        const double u2 = U2[i];
+        const double u3 = U3[i];
+        const double sumU = std::abs(u1) + std::abs(u2) + std::abs(u3);
+        if (sumU < tiny) {
+            n[i] = (R >= 0.0) ? 0.0 : 1.0;
+            continue;
+        }
+
+        // LHS(n) = c1 * 1 * U1
+        //       + c2 * (1/(2 sqrt n))      * U2
+        //       + c3 * (3/(4 n^{1/4}))     * U3
+        // Strictly decreasing in n for n in (0, 1) when U2, U3 >= 0.
+        auto lhs = [&](double nn) {
+            const double nc = std::clamp(nn, 1.0e-14, 1.0);
+            const double t1 = c1 * u1;
+            const double t2 = c2 * 0.5  / std::sqrt(nc)         * u2;
+            const double t3 = c3 * 0.75 * std::pow(nc, -0.25)   * u3;
+            return t1 + t2 + t3;
+        };
+
+        const double eps = 1.0e-12;
+        const double lo_n = eps;
+        const double hi_n = 1.0;
+        const double L_lo = lhs(lo_n);  // largest value
+        const double L_hi = lhs(hi_n);  // smallest value
+        // Saturate on the appropriate boundary if the EL equation has no
+        // interior solution.  Note LHS is decreasing in n, so:
+        //   R >= L_lo  -> push n down  -> n = 0
+        //   R <= L_hi  -> push n up    -> n = 1
+        if (R >= L_lo) { n[i] = 0.0; continue; }
+        if (R <= L_hi) { n[i] = 1.0; continue; }
+        double a = lo_n, b = hi_n;
+        for (int it = 0; it < 80; ++it) {
+            const double m = 0.5 * (a + b);
+            if (lhs(m) > R) a = m; else b = m;
+            if (b - a < 1.0e-12) break;
+        }
+        n[i] = std::clamp(0.5 * (a + b), 0.0, 1.0);
+    }
+    return n;
+}
+
 // Closed-form occupation update for kernels with the additive structure
 //
 //     K(n_i, n_j) = n_i n_j + g(n_i) g(n_j),
@@ -290,6 +373,10 @@ solve_rdmft(double rs,
     const BetaFunctional* beta_f = dynamic_cast<const BetaFunctional*>(&F);
     const bool additive = (cga != nullptr) || (beta_f != nullptr);
 
+    // GEO uses a non-factorizable multi-power kernel; it is solved via the
+    // generic projected-gradient branch below (no special-case here).
+    const GEOFunctional*  geo  = dynamic_cast<const GEOFunctional*>(&F);
+
     double alpha = 1.0;
     if (pf)        alpha = pf->alpha();
     else if (mu_f) alpha = 0.5;
@@ -306,7 +393,10 @@ solve_rdmft(double rs,
     // the endpoints, so we deliberately seed a broad range of fractionally-
     // occupied initial conditions.  For factorized and generic functionals
     // one start (sharp step) is enough.
-    const std::vector<std::pair<bool, double>> starts = additive
+    // Smeared multi-start helps non-factorizable kernels (additive CGA / Beta
+    // and the multi-power GEO) escape the trivial HF-step fixed point.
+    const bool needs_multistart = additive || (geo != nullptr);
+    const std::vector<std::pair<bool, double>> starts = needs_multistart
         ? std::vector<std::pair<bool, double>>{
               {false, 0.05}, {false, 0.10}, {false, 0.20},
               {false, 0.40}, {false, 0.80}, {false, 1.50}}
@@ -365,6 +455,29 @@ solve_rdmft(double rs,
             auto U = compute_U(n);
             mu = bisect_mu_factorized(U);
             n_target = update_occupations_power(alpha, mu, U, g);
+        } else if (geo) {
+            // Multi-power GEO kernel: build U1, U2, U3 with f1(n) = n,
+            // f2(n) = sqrt(n), f3(n) = n^{3/4}, then solve the EL equation
+            // pointwise via 1-D bisection (see update_occupations_geo).
+            auto f1 = [](double nn) { return nn; };
+            auto f2 = [](double nn) { return nn > 0.0 ? std::sqrt(nn) : 0.0; };
+            auto f3 = [](double nn) { return nn > 0.0 ? std::pow(nn, 0.75) : 0.0; };
+            auto U1 = compute_U_with(n, g, W, f1);
+            auto U2 = compute_U_with(n, g, W, f2);
+            auto U3 = compute_U_with(n, g, W, f3);
+
+            auto bisect_mu_geo = [&]() {
+                double lo = opt.mu_lo, hi = opt.mu_hi;
+                for (int b = 0; b < opt.bisect_iter; ++b) {
+                    double m = 0.5 * (lo + hi);
+                    auto n_try = update_occupations_geo(m, U1, U2, U3, g);
+                    if (density_of(n_try) > rho_target) hi = m;
+                    else                                 lo = m;
+                }
+                return 0.5 * (lo + hi);
+            };
+            mu = bisect_mu_geo();
+            n_target = update_occupations_geo(mu, U1, U2, U3, g);
         } else if (additive) {
             // Additive kernel K = n_i n_j + g(n_i) g(n_j): closed-form update
             // for n_i once mu is found by bisection.  We use a soft floor on

@@ -236,6 +236,61 @@ private:
     }
 };
 
+// GEO functional (this work).  Multi-power "geometric-mean" kernel built as
+// the equally-normalized sum
+//
+//     K_GEO(n_p, n_q) = [ n_p n_q  +  (n_p n_q)^{1/2}
+//                       + 2 * (n_p n_q)^{3/4} ] / 4
+//                     = [ f1(n_p) f1(n_q) + f2(n_p) f2(n_q)
+//                       + 2 f3(n_p) f3(n_q) ] / 4
+//
+// with f1(n) = n,  f2(n) = sqrt(n),  f3(n) = n^{3/4}.  This blends the HF
+// (alpha = 1), Mueller (alpha = 1/2) and Power(3/4) factorizable kernels
+// with weights 1 : 1 : 2, normalized so that K_GEO(1, 1) = 1 (matching HF
+// at saturation).  Notable properties:
+//
+//   * Symmetric: K(n_p, n_q) = K(n_q, n_p).
+//   * Vanishes at n_p = 0 (or n_q = 0) and equals 1 at n_p = n_q = 1, so it
+//     reproduces the HF saturation limit while adding sqrt-type and 3/4-type
+//     correlation contributions in the interior.
+//   * Not factorizable, so we override `kernel` / `kernel_grad` rather than
+//     supplying a single f / df.  The base-class f / df are still defined
+//     (they default to the Mueller form) so that the abstract interface is
+//     satisfied; the energy and gradient evaluators only call `kernel` and
+//     `kernel_grad`.
+class GEOFunctional : public Functional {
+public:
+    std::string name() const override { return "GEO"; }
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+    double kernel(double ni, double nj) const override {
+        const double p = ni * nj;
+        if (p <= 0.0) return 0.0;
+        const double s12 = std::sqrt(p);            // (n_p n_q)^{1/2}
+        const double s34 = std::pow(p, 0.75);       // (n_p n_q)^{3/4}
+        return 0.25 * (p + s12 + 2.0 * s34);
+    }
+    double kernel_grad(double ni, double nj) const override {
+        // d K / d n_i with n_j held fixed.  Differentiate term by term:
+        //   d/dn_i [ n_i n_j ]                = n_j
+        //   d/dn_i [ (n_i n_j)^{1/2} ]        = (1/2) n_j (n_i n_j)^{-1/2}
+        //                                     = (1/2) sqrt(n_j / n_i)
+        //   d/dn_i [ 2 (n_i n_j)^{3/4} ]      = (3/2) n_j (n_i n_j)^{-1/4}
+        const double eps = 1.0e-14;
+        const double nic = (ni > eps) ? ni : eps;
+        const double njc = (nj > eps) ? nj : eps;
+        const double pc  = nic * njc;
+        const double ds12 = 0.5 * std::sqrt(njc / nic);
+        const double ds34 = 1.5 * njc * std::pow(pc, -0.25);
+        return 0.25 * (nj + ds12 + ds34);
+    }
+};
+
 // BBC1 (Gritsenko, Pernal, Baerends 2005).  In a plane-wave basis it reduces
 // to using the Mueller kernel everywhere except that pairs of "weakly
 // occupied" orbitals (n_i, n_j < 1/2 in the paramagnetic case) get a sign
@@ -293,6 +348,7 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     if (key == "CGA")     return std::make_unique<CGAFunctional>();
     if (key == "Power")   return std::make_unique<PowerFunctional>(alpha);
     if (key == "BBC1")    return std::make_unique<BBC1Functional>();
+    if (key == "GEO")     return std::make_unique<GEOFunctional>();
     // The Beta functional needs an explicit exponent; callers should use
     // make_functional("Beta", beta) explicitly (alpha is reused as beta).
     if (key == "Beta")    return std::make_unique<BetaFunctional>(alpha);
