@@ -28,7 +28,13 @@ namespace rdmft {
 // and the user multiplies by u_j = k_j * f(n_j) every iteration.
 struct ExchangeKernel {
     std::size_t N = 0;
-    std::vector<double> W;  // row-major, size N*N
+    std::vector<double> W;   // row-major W[i*N+j]
+    // Transpose Wt[i*N+j] = W[j*N+i] so sums over the second W index are
+    // contiguous (cache-friendly) when the outer index is fixed.
+    std::vector<double> Wt;
+
+    const double* w_row(std::size_t i) const { return W.data() + i * N; }
+    const double* wt_row(std::size_t i) const { return Wt.data() + i * N; }
 
     static ExchangeKernel build(const Grid& g) {
         const std::size_t N = g.n();
@@ -118,6 +124,12 @@ struct ExchangeKernel {
                 const double w_right = (M1 - a * M0) / h;
                 K.W[i * N + s]       += w_left;
                 K.W[i * N + s + 1]   += w_right;
+            }
+        }
+        K.Wt.resize(N * N);
+        for (std::size_t i = 0; i < N; ++i) {
+            for (std::size_t j = 0; j < N; ++j) {
+                K.Wt[i * N + j] = K.W[j * N + i];
             }
         }
         return K;

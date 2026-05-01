@@ -1,0 +1,70 @@
+python3 scripts/optimize_optGM.py   --rs 0.2,0.3,0.5,1,2,3,4,5,6,8,10 --N 401 --kmax 6
+
+=== optGM angle search (RMSE of E_c vs PW92) ===
+  executable: /home/kluo/Documents/repo/RDMFT_HEG_Correlation/build/rdmft_heg
+  main grid:  N=401  kmax=6.0
+  main r_s:   [0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0]
+  method:     Nelder-Mead  maxiter=22
+  work dir:   /home/kluo/Documents/repo/RDMFT_HEG_Correlation/build/optgm_ie3hng1l
+
+--- prescreen: coarse rdmft cases for a better starting (theta, phi) ---
+  prescreen uses N=101  kmax=4.0  r_s=[0.2, 0.5, 1.0, 2.0, 4.0]  (faster than main run)
+  [ 1] GEO-like (w≈0.25,0.5,0.25)                    RMSE=3.33549e-02  (13.1s)  a,b,c=(0.500,0.707,0.500)
+  [ 2] equal weights w1=w2=w3                        RMSE=5.15975e-02  (12.0s)  a,b,c=(0.577,0.577,0.577)
+  [ 3] HF-heavy                                      RMSE=6.20957e-02  (9.6s)  a,b,c=(0.742,0.529,0.412)
+  [ 4] sqrt-heavy (Mueller-like)                     RMSE=2.20897e-02  (11.4s)  a,b,c=(0.424,0.762,0.490)
+  [ 5] 3/4-power-heavy                               RMSE=5.23165e-02  (11.6s)  a,b,c=(0.469,0.529,0.707)
+  [ 6] octant mix                                    RMSE=5.02370e-02  (10.9s)  a,b,c=(0.600,0.600,0.529)
+  [ 7] polar-ish (large |gamma|)                     RMSE=5.97930e-02  (11.8s)  a,b,c=(0.386,0.386,0.838)
+  [ 8] theta=π/4, phi=0                              RMSE=7.58086e-02  (6.3s)  a,b,c=(0.707,0.000,0.707)
+  [ 9] theta=π/3, phi=π/2                            RMSE=9.83582e-03  (11.5s)  a,b,c=(0.000,0.866,0.500)
+
+  prescreen best: theta=π/3, phi=π/2
+  -> starting theta=1.0472  phi=1.5708  (coarse RMSE=9.83582e-03)
+
+--- main optimization (full r_s, full N/kmax) ---
+  stopping loosely: ~1 decimal(s) on (a,b,c) after round+renorm; NM xatol=0.07  fatol=0.0005
+  [main] eval #1  theta=1.0472 phi=1.5708  a=0.0000 b=0.8660 c=0.5000  RMSE=1.46149e-02  (152.5s)
+  [main] eval #2  theta=1.1672 phi=1.5708  a=0.0000 b=0.9197 c=0.3927  RMSE=2.70350e-02  (163.0s)
+  [main] eval #3  theta=1.0472 phi=1.6908  a=-0.1037 b=0.8598 c=0.5000  RMSE=1.30053e-02  (157.3s)
+  [main] eval #4  theta=0.9272 phi=1.6908  a=-0.0958 b=0.7942 c=0.6001  RMSE=5.71615e-03  (152.7s)
+  [main] eval #5  theta=0.8072 phi=1.7508  a=-0.1293 b=0.7107 c=0.6915  RMSE=1.52734e-02  (138.1s)
+  [main] eval #6  theta=0.9272 phi=1.8108  a=-0.1901 b=0.7770 c=0.6001  RMSE=7.53428e-03  (149.1s)
+  [main] eval #7  theta=0.8072 phi=1.8108  a=-0.1717 b=0.7016 c=0.6915  RMSE=1.67716e-02  (136.2s)
+  [main] eval #8  theta=0.8672 phi=1.7808  a=-0.1590 b=0.7458 c=0.6470  RMSE=1.10429e-02  (142.2s)
+  [main] eval #9  theta=0.9872 phi=1.7208  a=-0.1247 b=0.8251 c=0.5510  RMSE=7.17557e-03  (154.1s)
+  [main] eval #10  theta=0.9872 phi=1.6008  a=-0.0250 b=0.8341 c=0.5510  RMSE=8.76407e-03  (156.3s)
+  [main] eval #11  theta=0.9722 phi=1.6533  a=-0.0681 b=0.8233 c=0.5635  RMSE=7.17364e-03  (157.8s)
+  [main] eval #12  theta=0.9122 phi=1.6233  a=-0.0415 b=0.7898 c=0.6120  RMSE=5.80693e-03  (147.0s)
+  [main] eval #13  theta=0.8672 phi=1.6608  a=-0.0685 b=0.7594 c=0.6470  RMSE=8.72988e-03  (138.5s)
+  [main] eval #14  theta=0.8934 phi=1.6589  a=-0.0686 b=0.7762 c=0.6267  RMSE=6.86953e-03  (146.3s)
+  [main] eval #15  theta=0.9459 phi=1.6552  a=-0.0684 b=0.8082 c=0.5850  RMSE=5.83148e-03  (151.6s)
+  [main] eval #16  theta=0.9066 phi=1.6580  a=-0.0686 b=0.7844 c=0.6164  RMSE=6.17368e-03  (151.9s)
+  [main] eval #17  theta=0.9197 phi=1.6570  a=-0.0685 b=0.7925 c=0.6061  RMSE=5.72909e-03  (151.5s)
+  [main] eval #18  theta=0.9366 phi=1.6730  a=-0.0822 b=0.8013 c=0.5926  RMSE=5.61749e-03  (150.4s)
+
+=== optimization finished ===
+  message: built-in Nelder-Mead
+  success=True  rdmft_evals=18  final RMSE=5.61749e-03
+  refined (a,b,c) on unit sphere:  -0.082172  0.801330  0.592552
+  weights w1,w2,w3 = a^2,b^2,c^2:  0.00675  0.64213  0.35112
+  spherical: theta=0.93657  phi=1.67298
+
+  Recommended CLI (rounded to 1 dp, renormalized): OptGM@-0.1;0.8;0.6
+
+--- final validation run -> /home/kluo/Documents/repo/RDMFT_HEG_Correlation/build/optgm_best (rounded angles, full grid) ---
+Per r_s (model vs PW92):
+  rs= 0.2  Ec=-0.09387976  PW92=-0.10112257  diff= 7.24280884e-03
+  rs= 0.3  Ec=-0.08273179  PW92=-0.09001162  diff= 7.27982398e-03
+  rs= 0.5  Ec=-0.07090198  PW92=-0.07661874  diff= 5.71675713e-03
+  rs=   1  Ec=-0.05626262  PW92=-0.05977369  diff= 3.51106572e-03
+  rs=   2  Ec=-0.04409533  PW92=-0.04475950  diff= 6.64170799e-04
+  rs=   3  Ec=-0.03827407  PW92=-0.03694122  diff=-1.33285501e-03
+  rs=   4  Ec=-0.03478297  PW92=-0.03186634  diff=-2.91663073e-03
+  rs=   5  Ec=-0.03247287  PW92=-0.02821623  diff=-4.25663634e-03
+  rs=   6  Ec=-0.03086704  PW92=-0.02542712  diff=-5.43991524e-03
+  rs=   8  Ec=-0.02891310  PW92=-0.02139068  diff=-7.52241991e-03
+  rs=  10  Ec=-0.02796988  PW92=-0.01857229  diff=-9.39759308e-03
+  RMSE after rounding: 5.67130e-03
+
+Removed temp dir /home/kluo/Documents/repo/RDMFT_HEG_Correlation/build/optgm_ie3hng1l

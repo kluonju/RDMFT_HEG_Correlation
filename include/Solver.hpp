@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <functional>
 #include <limits>
 #include <vector>
 
@@ -361,18 +360,26 @@ update_occupations_additive(double mu,
 // Generic helper that computes U_i = sum_j W(i,j) k_j fn(n_j).  Used to build
 // the U_HF and U_g sums above, matching the convention of the existing
 // `update_occupations_power` (no `w_j` factor, exactly matching `V_inner`).
-inline std::vector<double>
-compute_U_with(const std::vector<double>& nv,
-               const Grid& g,
-               const ExchangeKernel& W,
-               const std::function<double(double)>& fn) {
+template <class Fn>
+inline std::vector<double> compute_U_with(const std::vector<double>& nv,
+                                          const Grid& g,
+                                          const ExchangeKernel& W,
+                                          Fn&& fn) {
     const std::size_t N = g.n();
     std::vector<double> U(N, 0.0);
     std::vector<double> kf(N);
-    for (std::size_t j = 0; j < N; ++j) kf[j] = g.k[j] * fn(nv[j]);
+    for (std::size_t j = 0; j < N; ++j) {
+        kf[j] = g.k[j] * fn(nv[j]);
+    }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (N > 96)
+#endif
     for (std::size_t i = 0; i < N; ++i) {
+        const double* row = W.w_row(i);
         double s = 0.0;
-        for (std::size_t j = 0; j < N; ++j) s += W(i, j) * kf[j];
+        for (std::size_t j = 0; j < N; ++j) {
+            s += row[j] * kf[j];
+        }
         U[i] = s;
     }
     return U;
@@ -475,10 +482,18 @@ solve_rdmft(double rs,
         const std::size_t N = g.n();
         std::vector<double> U(N, 0.0);
         std::vector<double> kf(N);
-        for (std::size_t j = 0; j < N; ++j) kf[j] = g.k[j] * F.f(nv[j]);
+        for (std::size_t j = 0; j < N; ++j) {
+            kf[j] = g.k[j] * F.f(nv[j]);
+        }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (N > 96)
+#endif
         for (std::size_t i = 0; i < N; ++i) {
+            const double* row = W.w_row(i);
             double s = 0.0;
-            for (std::size_t j = 0; j < N; ++j) s += W(i, j) * kf[j];
+            for (std::size_t j = 0; j < N; ++j) {
+                s += row[j] * kf[j];
+            }
             U[i] = s;
         }
         return U;

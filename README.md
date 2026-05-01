@@ -73,7 +73,8 @@ E_xc/V = -(1 / (2π³)) ∬₀^∞ k k' K(n(k), n(k'))
   做归一化，使 `a^2+b^2+c^2=1`，从而 `K(1,1)=1`）。CLI 使用分号分隔角度
   （因为 `--funcs` 列表本身用逗号分隔），例如
   `OptGM@0.5;0.70710678;0.5`。可用 `python3 scripts/optimize_optGM.py` 在 PW92
-  参考下拟合 `(a,b,c)`（仅需 NumPy；可选安装 SciPy 以使用 L-BFGS-B）。
+  参考下拟合 `(a,b,c)`（默认先做少量粗网格 prescreen 再松收敛；`--quiet` 减少输出，
+  `--verbose` 打印 C++ 标准输出；仅需 NumPy，可选 SciPy）。
 
 * **Beta**：将 CGA 的空穴部分推广为可调指数
 
@@ -169,7 +170,8 @@ QMC 参考由 PW92 拟合（`include/QMC.hpp`）给出。
 
 ```bash
 # 选项 A：Makefile（最简单）
-make            # 编译 build/rdmft_heg 与 build/test_hf_exchange
+make            # 编译 build/rdmft_heg 与 build/test_hf_exchange（默认 -fopenmp）
+make USE_OPENMP=0   # 无 OpenMP（若环境不支持 libgomp）
 make test       # 运行单元测试
 make run        # 增量扫描：仅运行 data/<name>.tsv 不存在的泛函
 make rerun      # 强制重算（--force）所有泛函
@@ -177,6 +179,12 @@ make geo        # 仅重算 GEO -> data/GEO.tsv
 make plot       # 读取 data/*.tsv 生成 figures/correlation_energy.png
 make clean-data # 删除所有 data/*.tsv，下一次 make run 会重新跑全部
 ```
+
+性能说明（相对旧实现）：预计算交换矩阵 `W` 的同时生成转置 `W^T`，使
+`∂E_xc/∂n_i` 中按列访问 `W` 时内存连续；因子化泛函（HF / Müller / Power / GU）
+的 `V_inner` 与 `deps_xc` 用一次矩阵–向量乘积代替 `N²` 次 `kernel()` 调用；所有
+`O(N²)` 外层循环默认用 **OpenMP** 并行（`make USE_OPENMP=0` 可关）。GEO / optGM /
+CGA / Beta 等非因子化核仍保持原物理公式，仅受益于连续访问与并行。
 
 每个泛函的结果单独写到 `data/<name>.tsv`（例如 `data/HF.tsv`、
 `data/GEO.tsv`、`data/Power_0.55.tsv`）。这样新增/修改一个泛函时只需

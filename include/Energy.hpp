@@ -58,15 +58,39 @@ struct EnergyEvaluator {
                                        const Functional& F) {
         const std::size_t N = g.n();
         std::vector<double> V(N, 0.0);
-        // Generic (and direct) form V_i = sum_j W_ij k_j K(n_i, n_j).  For a
-        // factorized kernel this is equivalent to f(n_i)*sum_j W_ij k_j f(n_j)
-        // and the cost is identical at O(N^2).  Keeping the general path means
-        // adding a new functional with a non-factorizable kernel is plug-and-
-        // play.
+        // Fast path: K(n_i,n_j) = f(n_i) f(n_j)  =>  one matvec per SCF step,
+        // contiguous row access, optional OpenMP (no N^2 virtual kernel calls).
+        const auto* pf   = dynamic_cast<const PowerFunctional*>(&F);
+        const auto* hf   = dynamic_cast<const HFFunctional*>(&F);
+        const auto* mu_f = dynamic_cast<const MuellerFunctional*>(&F);
+        const auto* gu_f = dynamic_cast<const GUFunctional*>(&F);
+        if (pf || hf || mu_f || gu_f) {
+            std::vector<double> kf(N);
+            for (std::size_t j = 0; j < N; ++j) {
+                kf[j] = g.k[j] * F.f(n[j]);
+            }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (N > 96)
+#endif
+            for (std::size_t i = 0; i < N; ++i) {
+                const double* row = W.w_row(i);
+                double v = 0.0;
+                for (std::size_t j = 0; j < N; ++j) {
+                    v += row[j] * kf[j];
+                }
+                V[i] = F.f(n[i]) * v;
+            }
+            return V;
+        }
+        // General symmetric kernel: V_i = sum_j W_ij k_j K(n_i, n_j).
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (N > 64)
+#endif
         for (std::size_t i = 0; i < N; ++i) {
+            const double* row = W.w_row(i);
             double v = 0.0;
             for (std::size_t j = 0; j < N; ++j) {
-                v += W(i, j) * g.k[j] * F.kernel(n[i], n[j]);
+                v += row[j] * g.k[j] * F.kernel(n[i], n[j]);
             }
             V[i] = v;
         }
@@ -107,13 +131,39 @@ struct EnergyEvaluator {
         constexpr double pi = M_PI;
         const std::size_t N = g.n();
         std::vector<double> de(N, 0.0);
+        const auto* pf   = dynamic_cast<const PowerFunctional*>(&F);
+        const auto* hf   = dynamic_cast<const HFFunctional*>(&F);
+        const auto* mu_f = dynamic_cast<const MuellerFunctional*>(&F);
+        const auto* gu_f = dynamic_cast<const GUFunctional*>(&F);
+        if (pf || hf || mu_f || gu_f) {
+            std::vector<double> wf(N);
+            for (std::size_t j = 0; j < N; ++j) {
+                wf[j] = g.w[j] * g.k[j] * F.f(n[j]);
+            }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (N > 96)
+#endif
+            for (std::size_t i = 0; i < N; ++i) {
+                const double ki = g.k[i];
+                const double* row = W.wt_row(i);
+                double s = 0.0;
+                for (std::size_t j = 0; j < N; ++j) {
+                    s += row[j] * wf[j];
+                }
+                de[i] = -ki * F.df(n[i]) * s / (pi * pi * pi);
+            }
+            return de;
+        }
+        // General kernel: use W^T row for contiguous access (W(j,i) = Wt(i,j)).
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (N > 64)
+#endif
         for (std::size_t i = 0; i < N; ++i) {
             const double ki = g.k[i];
+            const double* row = W.wt_row(i);
             double s = 0.0;
             for (std::size_t j = 0; j < N; ++j) {
-                // 2 contributions (i is first or second argument), times -1/(2pi^3),
-                // plus assume symmetric K.
-                s += g.w[j] * W(j, i) * g.k[j] * F.kernel_grad(n[i], n[j]);
+                s += g.w[j] * g.k[j] * row[j] * F.kernel_grad(n[i], n[j]);
             }
             de[i] = -ki * s / (pi * pi * pi);
         }
