@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Plot RDMFT correlation energies vs rs from per-functional TSVs.
 
-Reads every ``*.tsv`` file under ``--in`` (a directory) and overlays the
-correlation energy curves on a single figure together with the PW92 QMC
-reference.  The directory layout matches the rdmft_heg driver:
+Reads ``*.tsv`` files under ``--in`` and overlays the PW92 QMC reference with
+Müller, CGA, optGM, and Power(0.55/0.58) (see ``plot_common.WANTED_SERIES``).
+The directory layout matches the rdmft_heg driver:
 
     data/
         HF.tsv
@@ -17,27 +17,55 @@ file (the previous monolithic ``data/results.tsv`` layout) and in that case
 all rows are read from that one file.
 """
 import argparse
+import sys
 from pathlib import Path
-import numpy as np
+
 import matplotlib.pyplot as plt
+import numpy as np
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from plot_common import (  # noqa: E402
+    MONTE_CARLO_LABEL,
+    SUBSET_STYLE,
+    WANTED_SERIES,
+    legend_key_for_subset,
+)
 
 
-COLORS = {
-    "Monte Carlo":   ("black",   "-",  None),
-    "HF":            ("#3a6cff", "--", None),
-    "CHF":           ("#3a6cff", "--", None),
-    "Mueller":       ("#21c7d6", "-",  "o"),
-    "GU":            ("#1f77b4", ":",  "x"),
-    "CGA":           ("#ff7f0e", "-",  "D"),
-    "GEO":           ("#000080", "-",  "*"),
-    "optGM":         ("#006400", "-",  "h"),
-    "BBC1":          ("#9b59b6", "-",  ">"),
-    "Power(0.55)":   ("#d62728", "-",  "s"),
-    "Power(0.58)":   ("#2ca02c", "-",  "o"),
-    "Beta(0.45)":    ("#e377c2", "-",  "v"),
-    "Beta(0.55)":    ("#8c564b", "-",  "^"),
-    "Beta(0.65)":    ("#17becf", "-",  "P"),
-}
+def _fmt_rs_tick(rs: float) -> str:
+    """Compact r_s label for log-axis ticks (e.g. 0.2, 1, 10).
+
+    Do not use ``rstrip('0')`` on integers written without a dot: ``"10"`` would
+    become ``"1"``.
+    """
+    r = float(rs)
+    if abs(r - round(r)) < 1e-9 * max(1.0, abs(r)):
+        return str(int(round(r)))
+    s = f"{r:.4f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s if s else str(r)
+
+
+def apply_rs_ticks(ax, series: dict, qmc_rs: list[float]) -> None:
+    """Label every distinct r_s from data on the (log) x-axis; span 0.2–10."""
+    tick_vals = {float(r) for r in qmc_rs}
+    for pts in series.values():
+        for r, _ in pts:
+            tick_vals.add(float(r))
+    ticks = sorted(tick_vals)
+    if len(ticks) < 2:
+        ax.set_xlim(0.1, 11.0)
+        return
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([_fmt_rs_tick(t) for t in ticks])
+    ax.tick_params(axis="x", which="major", labelsize=8)
+    for lab in ax.get_xticklabels():
+        lab.set_horizontalalignment("center")
+    ax.set_xlim(0.1, 11.0)
 
 
 def parse_tsv(path: Path):
@@ -72,25 +100,6 @@ def collect_rows(in_path: Path):
         yield from parse_tsv(in_path)
 
 
-def pretty_name(fn: str) -> str:
-    """Collapse internal labels like 'Power(alpha=0.550000)' to 'Power(0.55)'."""
-    if fn.startswith("Power(alpha="):
-        alpha = fn.split("=")[1].rstrip(")")
-        try:
-            return f"Power({float(alpha):.2f})"
-        except ValueError:
-            return fn
-    if fn.startswith("Beta(beta="):
-        beta = fn.split("=")[1].rstrip(")")
-        try:
-            return f"Beta({float(beta):.2f})"
-        except ValueError:
-            return fn
-    if fn.startswith("optGM("):
-        return "optGM"
-    return fn
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in",  dest="in_path",  default="data",
@@ -105,54 +114,53 @@ def main():
     series: dict[str, list[tuple[float, float]]] = {}
     qmc_pairs: list[tuple[float, float]] = []
     for rs, fn, ec, ecq in collect_rows(in_path):
-        fn = pretty_name(fn)
-        series.setdefault(fn, []).append((rs, ec))
+        key = legend_key_for_subset(fn)
+        if key is None:
+            continue
+        series.setdefault(key, []).append((rs, ec))
         qmc_pairs.append((rs, ecq))
 
-    if not series:
-        raise SystemExit(f"No usable data points in {in_path}")
+    if not qmc_pairs:
+        raise SystemExit(
+            f"No usable data points for plotted functionals in {in_path}"
+        )
 
     qmc = sorted(set(qmc_pairs))
     qmc_rs = [p[0] for p in qmc]
-    qmc_e  = [p[1] for p in qmc]
-
-    # Group functionals so the legend reads HF/Mueller/GU/CGA/GEO/Power.../Beta...
-    # rather than alphabetical, which scatters families.
-    def order_key(name: str) -> tuple:
-        if name == "HF":      return (0, 0, name)
-        if name == "Mueller": return (1, 0, name)
-        if name == "GU":      return (2, 0, name)
-        if name == "CGA":     return (3, 0, name)
-        if name == "GEO":     return (3, 1, name)
-        if name == "optGM":   return (3, 2, name)
-        if name.startswith("Power("):
-            try:
-                a = float(name[6:-1])
-            except ValueError:
-                a = 0.0
-            return (4, a, name)
-        if name.startswith("Beta("):
-            try:
-                b = float(name[5:-1])
-            except ValueError:
-                b = 0.0
-            return (5, b, name)
-        return (9, 0, name)
+    qmc_e = [p[1] for p in qmc]
 
     fig, ax = plt.subplots(figsize=(8.0, 5.5))
     ax.set_xscale("log")
-    ax.plot(qmc_rs, qmc_e, "k-", linewidth=2.2, label="Monte Carlo (PW92)")
-    for name in sorted(series.keys(), key=order_key):
+    mc_c, mc_ls, _mc_mk = SUBSET_STYLE[MONTE_CARLO_LABEL]
+    ax.plot(
+        qmc_rs,
+        qmc_e,
+        mc_ls,
+        color=mc_c,
+        linewidth=2.2,
+        label=MONTE_CARLO_LABEL,
+    )
+    for name in WANTED_SERIES:
+        if name not in series:
+            continue
         pts = sorted(series[name])
         rs = [p[0] for p in pts]
         ec = [p[1] for p in pts]
-        c, ls, mk = COLORS.get(name, (None, "-", "o"))
-        ax.plot(rs, ec, ls, color=c, marker=mk, label=name, linewidth=1.5,
-                markersize=5)
+        c, ls, mk = SUBSET_STYLE[name]
+        ax.plot(
+            rs,
+            ec,
+            ls,
+            color=c,
+            marker=mk,
+            label=name,
+            linewidth=1.5,
+            markersize=5,
+        )
 
+    apply_rs_ticks(ax, series, qmc_rs)
     ax.set_xlabel(r"$r_s$ (a.u.)")
     ax.set_ylabel(r"Correlation energy per electron $E_c$ (hartree)")
-    ax.set_title("RDMFT correlation energy of the HEG: GU, CGA, GEO and Beta functionals")
     ax.axhline(0, color="0.6", linewidth=0.6, linestyle="-")
     ax.grid(True, which="both", alpha=0.25)
     ax.set_ylim(-0.20, 0.02)

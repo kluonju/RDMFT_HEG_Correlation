@@ -295,8 +295,8 @@ def main() -> None:
     ap.add_argument(
         "--kmax",
         type=float,
-        default=6.0,
-        help="k_max in units of k_F for the main run (Makefile: 6).",
+        default=3.0,
+        help="k_max in units of k_F for the main run (Makefile: 3).",
     )
     ap.add_argument(
         "--method",
@@ -360,8 +360,8 @@ def main() -> None:
     ap.add_argument(
         "--prescreen-kmax",
         type=float,
-        default=4.0,
-        help="k_max factor during prescreen.",
+        default=2.0,
+        help="k_max factor during prescreen (coarser than main --kmax).",
     )
     ap.add_argument(
         "--quiet",

@@ -1,3 +1,6 @@
+# Optional bulk n(k) exports from rdmft_heg --nk-out
+data/nk/
+
 build/
 *.o
 *.obj

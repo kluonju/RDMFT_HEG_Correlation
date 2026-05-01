@@ -23,7 +23,7 @@ int main() {
     double rs = 2.0;
     double kf = HEG::kF(rs);
 
-    Grid g            = Grid::trapezoid_with_node_at(kf, 6.0 * kf, 401);
+    Grid g            = Grid::graded_fermi_trapezoid(kf, 3.0 * kf, 401);
     ExchangeKernel W  = ExchangeKernel::build(g);
 
     std::vector<double> n(g.n(), 0.0);

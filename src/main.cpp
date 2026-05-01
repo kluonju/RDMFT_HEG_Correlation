@@ -7,8 +7,8 @@
 //
 // Per-functional files (e.g. data/HF.tsv, data/GEO.tsv) make it cheap to add
 // a new functional without re-running every other one: existing files are
-// left untouched unless --force is given.  The plot script reads all .tsv
-// files in the output directory at plot time.
+// left untouched unless --force is given.  Only functionals passed in --funcs
+// are run; there is no built-in default list.
 
 #include <algorithm>
 #include <cstdio>
@@ -40,14 +40,11 @@ struct Args {
     std::vector<double> rs_list = {
         0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0
     };
-    std::vector<std::string> funcs = {
-        "HF", "Mueller", "GU", "CGA", "GEO",
-        "Power@0.55", "Power@0.58",
-        "Beta@0.45", "Beta@0.55", "Beta@0.65"
-    };
+    std::vector<std::string> funcs;  // must be set via --funcs (no silent default list)
     int    N_grid = 401;
-    double k_max_factor = 6.0;   // multiplicative factor on kF
+    double k_max_factor = 3.0;   // multiplicative factor on kF (k / k_F <= k_max_factor)
     std::string out_dir = "data";
+    std::string nk_out_dir;  // if non-empty, write n(k) TSVs under this directory
     bool   force = false;
     bool   verbose = false;
 };
@@ -56,14 +53,17 @@ void print_help() {
     std::cout <<
         "Usage: rdmft_heg [options]\n"
         "  --rs <list>          comma-separated rs values\n"
-        "  --funcs <list>       comma-separated functionals\n"
+        "  --funcs <list>       **required** comma-separated functionals\n"
         "                       (HF, Mueller, GU, CGA, BBC1, GEO,\n"
         "                        OptGM@<a>;<b>;<c>, Power@<alpha>, Beta@<beta>)\n"
         "                       OptGM: use ';' between angles (commas split --funcs).\n"
         "                       Angles are normalized to a^2+b^2+c^2=1; weights are a^2,b^2,c^2.\n"
         "  --N <int>            #grid points (odd, default 401)\n"
-        "  --kmax <float>       k_max in units of kF(min(rs)) (default 6)\n"
+        "  --kmax <float>       k_max = factor * k_F(r_s) at each r_s (default 3)\n"
         "  --out-dir <dir>      directory for per-functional TSVs (default data)\n"
+        "  --nk-out <dir>       write n(k) to <dir>/<func>_rs<rs>.tsv for each solve.\n"
+        "                       If the energy TSV already exists, only n(k) is written\n"
+        "                       unless --force is given (then both are refreshed).\n"
         "  --force              recompute and overwrite existing TSVs\n"
         "                       (default: skip functionals whose TSV exists)\n"
         "  --verbose            verbose solver logs\n"
@@ -100,6 +100,7 @@ Args parse_args(int argc, char** argv) {
         else if (s == "--N")         a.N_grid  = std::stoi(next());
         else if (s == "--kmax")      a.k_max_factor = std::stod(next());
         else if (s == "--out-dir")   a.out_dir = next();
+        else if (s == "--nk-out")    a.nk_out_dir = next();
         else if (s == "--force")     a.force   = true;
         else if (s == "--verbose")   a.verbose = true;
         else { std::cerr << "Unknown arg: " << s << "\n"; print_help(); std::exit(1); }
@@ -142,10 +143,24 @@ bool file_exists(const std::string& path) {
     return stat(path.c_str(), &st) == 0;
 }
 
+// filename_for(key) without trailing ".tsv" (for nk export basename).
+std::string nk_stem_for(const std::string& key) {
+    std::string s = filename_for(key);
+    if (s.size() >= 4 && s.compare(s.size() - 4, 4, ".tsv") == 0) {
+        s.resize(s.size() - 4);
+    }
+    return s;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     Args args = parse_args(argc, argv);
+    if (args.funcs.empty()) {
+        std::cerr << "rdmft_heg: no functionals given; pass --funcs <comma-separated list>\n"
+                     "Example: --funcs HF,Mueller,CGA\n";
+        return 1;
+    }
 
     std::filesystem::create_directories(args.out_dir);
 
@@ -162,28 +177,41 @@ int main(int argc, char** argv) {
 
         const std::string out_path =
             args.out_dir + "/" + filename_for(key);
-        if (!args.force && file_exists(out_path)) {
+        const bool write_energy = args.force || !file_exists(out_path);
+        const bool export_nk    = !args.nk_out_dir.empty();
+
+        if (!write_energy && !export_nk) {
             std::cout << "[skip] " << out_path
                       << " already exists; pass --force to recompute.\n";
             ++n_skipped;
             continue;
         }
 
-        std::ofstream out(out_path);
-        if (!out) {
-            std::cerr << "Cannot open " << out_path << "\n";
-            continue;
+        std::ofstream out;
+        if (write_energy) {
+            out.open(out_path);
+            if (!out) {
+                std::cerr << "Cannot open " << out_path << "\n";
+                continue;
+            }
+            out << "# rs\tfunctional\tE_per_N(Ha)\tEc_per_N(Ha)\tEc_QMC(Ha)"
+                   "\tT/N\tExc/N\tmu\trho_err\tconverged\titers\n";
+            out << std::scientific << std::setprecision(10);
+        } else {
+            std::cout << "[nk-only] " << out_path
+                      << " exists; writing n(k) to " << args.nk_out_dir << "\n";
         }
-        out << "# rs\tfunctional\tE_per_N(Ha)\tEc_per_N(Ha)\tEc_QMC(Ha)"
-               "\tT/N\tExc/N\tmu\trho_err\tconverged\titers\n";
-        out << std::scientific << std::setprecision(10);
 
-        // Rebuild the Grid for each rs so that [0, k_max] always resolves
-        // the Fermi step well, with k_max = factor * kF.
+        if (export_nk) {
+            std::filesystem::create_directories(args.nk_out_dir);
+        }
+
+        // Rebuild the Grid for each rs: k_max = factor * k_F, with extra nodes
+        // packed near k_F (graded_fermi_trapezoid) for sharp n(k) fronts.
         for (double rs : args.rs_list) {
             const double kf    = HEG::kF(rs);
             const double k_max = args.k_max_factor * kf;
-            Grid g            = Grid::trapezoid_with_node_at(kf, k_max, args.N_grid);
+            Grid g = Grid::graded_fermi_trapezoid(kf, k_max, args.N_grid);
             ExchangeKernel W  = ExchangeKernel::build(g);
 
             const double E_HF_per_N = HEG::HF_per_electron(rs);
@@ -197,18 +225,41 @@ int main(int argc, char** argv) {
 
             SolveResult r = solve_rdmft(rs, *F, g, W, opt);
 
+            if (export_nk) {
+                char nk_name[512];
+                std::snprintf(nk_name, sizeof(nk_name), "%s/%s_rs%.4f.tsv",
+                              args.nk_out_dir.c_str(),
+                              nk_stem_for(key).c_str(),
+                              rs);
+                std::ofstream nk(nk_name);
+                if (nk) {
+                    nk << std::scientific << std::setprecision(16);
+                    nk << "# rs=" << rs << " kF=" << kf << " k_max=" << k_max
+                       << "\n";
+                    nk << "# functional: " << F->name() << "\n";
+                    nk << "# k\tn\n";
+                    for (std::size_t i = 0; i < g.n(); ++i) {
+                        nk << g.k[i] << '\t' << r.n[i] << "\n";
+                    }
+                } else {
+                    std::cerr << "Warning: cannot open " << nk_name << " for nk export\n";
+                }
+            }
+
             const double Ec      = r.E_per_N - E_HF_per_N;
             const double rho_err = std::abs(r.rho - HEG::density(rs));
 
-            out << rs << '\t' << F->name() << '\t' << r.E_per_N << '\t'
-                << Ec << '\t' << Ec_QMC << '\t'
-                << r.T_per_V / r.rho << '\t'
-                << r.Exc_per_V / r.rho << '\t'
-                << r.mu << '\t'
-                << rho_err << '\t'
-                << (r.converged ? 1 : 0) << '\t'
-                << r.iters << "\n";
-            out.flush();
+            if (write_energy) {
+                out << rs << '\t' << F->name() << '\t' << r.E_per_N << '\t'
+                    << Ec << '\t' << Ec_QMC << '\t'
+                    << r.T_per_V / r.rho << '\t'
+                    << r.Exc_per_V / r.rho << '\t'
+                    << r.mu << '\t'
+                    << rho_err << '\t'
+                    << (r.converged ? 1 : 0) << '\t'
+                    << r.iters << "\n";
+                out.flush();
+            }
 
             std::cout << std::setw(7) << rs << "  "
                       << std::setw(16) << std::left << F->name() << std::right
@@ -218,11 +269,17 @@ int main(int argc, char** argv) {
                       << "\n";
         }
 
-        std::cout << "Wrote " << out_path << "\n";
-        ++n_written;
+        if (write_energy) {
+            std::cout << "Wrote " << out_path << "\n";
+            ++n_written;
+        } else if (export_nk) {
+            std::cout << "Wrote n(k) files for " << F->name()
+                      << " under " << args.nk_out_dir << "\n";
+            ++n_written;
+        }
     }
 
-    std::cout << "\n" << n_written << " file(s) written, "
+    std::cout << "\n" << n_written << " functional(s) processed (energy TSV and/or n(k) export), "
               << n_skipped << " skipped (already up to date).\n";
     if (n_skipped > 0) {
         std::cout << "Use --force to overwrite existing per-functional TSVs.\n";

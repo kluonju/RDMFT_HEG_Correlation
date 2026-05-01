@@ -50,7 +50,7 @@ python3 scripts/optimize_optGM.py   --rs 0.2,0.3,0.5,1,2,3,4,5,6,8,10 --N 401 --
   weights w1,w2,w3 = a^2,b^2,c^2:  0.00675  0.64213  0.35112
   spherical: theta=0.93657  phi=1.67298
 
-  Recommended CLI (rounded to 1 dp, renormalized): OptGM@-0.1;0.8;0.6
+  Recommended CLI (exact weights w1,w2,w3 = 0.00675 0.64213 0.35112): OptGM@-0.0821547206643049;0.8013311419635793;0.5925545538598386
 
 --- final validation run -> /home/kluo/Documents/repo/RDMFT_HEG_Correlation/build/optgm_best (rounded angles, full grid) ---
 Per r_s (model vs PW92):

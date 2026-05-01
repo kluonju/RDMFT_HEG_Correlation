@@ -299,6 +299,8 @@ public:
 // where w1 = alpha^2, w2 = beta^2, w3 = gamma^2 and alpha^2 + beta^2 + gamma^2 = 1,
 // so K(1, 1) = 1 (HF saturation).  GEO in this codebase corresponds to
 // (w1, w2, w3) = (1/4, 1/2, 1/4).
+// To realize nonnegative weights (w1,w2,w3) that sum to 1, pass direction
+// (±sqrt(w1), ±sqrt(w2), ±sqrt(w3)); normalization leaves w_i unchanged.
 class OptGMFunctional : public Functional {
 public:
     explicit OptGMFunctional(double alpha, double beta, double gamma) {

@@ -72,7 +72,9 @@ E_xc/V = -(1 / (2π³)) ∬₀^∞ k k' K(n(k), n(k'))
   `w1=a^2`、`w2=b^2`、`w3=c^2`，其中 `(a,b,c)` 在单位球面上（程序会对输入
   做归一化，使 `a^2+b^2+c^2=1`，从而 `K(1,1)=1`）。CLI 使用分号分隔角度
   （因为 `--funcs` 列表本身用逗号分隔），例如
-  `OptGM@0.5;0.70710678;0.5`。可用 `python3 scripts/optimize_optGM.py` 在 PW92
+  例如权重 `w1,w2,w3 = 0.00675,0.64213,0.35112` 时取
+  `OptGM@-0.0821547206643049;0.8013311419635793;0.5925545538598386`
+  （即 `(-√w1,√w2,√w3)`，和为 1 时已在单位球上）。可用 `python3 scripts/optimize_optGM.py` 在 PW92
   参考下拟合 `(a,b,c)`（默认先做少量粗网格 prescreen 再松收敛；`--quiet` 减少输出，
   `--verbose` 打印 C++ 标准输出；仅需 NumPy，可选 SciPy）。
 
@@ -153,7 +155,10 @@ QMC 参考由 PW92 拟合（`include/QMC.hpp`）给出。
 │   └── QMC.hpp              # PW92 关联能参数化
 ├── src/main.cpp             # 命令行驱动程序
 ├── tests/test_hf_exchange.cpp
-├── scripts/plot_results.py  # 读取 data/*.tsv 画图
+├── scripts/plot_common.py   # 关联能 / n(k) 图共用曲线列表与样式
+├── scripts/plot_results.py  # 读取 data/*.tsv 画关联能（固定几条泛函 + PW92）
+├── scripts/plot_nk.py       # 读取 data/nk/*.tsv 画 n(k)（同上泛函，多 r_s）
+├── scripts/plot_nk_optgm.py # 仅 optGM：不同 r_s 的 n(k) 叠在同一张图
 ├── data/                    # 每个泛函一个 .tsv 文件（HF.tsv / GEO.tsv / ...）
 ├── figures/                 # 生成的对比图
 ├── Makefile                 # 简单 make 构建
@@ -173,11 +178,11 @@ QMC 参考由 PW92 拟合（`include/QMC.hpp`）给出。
 make            # 编译 build/rdmft_heg 与 build/test_hf_exchange（默认 -fopenmp）
 make USE_OPENMP=0   # 无 OpenMP（若环境不支持 libgomp）
 make test       # 运行单元测试
-make run        # 增量扫描：仅运行 data/<name>.tsv 不存在的泛函
-make rerun      # 强制重算（--force）所有泛函
+make run        # 增量扫描：只处理 Makefile 里 FUNCS 列出的泛函（缺 TSV 才算）
+make rerun      # 对同一批 FUNCS 强制重算（--force）
 make geo        # 仅重算 GEO -> data/GEO.tsv
-make plot       # 读取 data/*.tsv 生成 figures/correlation_energy.png
-make clean-data # 删除所有 data/*.tsv，下一次 make run 会重新跑全部
+make plot       # correlation_energy.png、nk.png、nk_optgm.png（需 data/ 与 make nk-data）
+make clean-data # 删除所有 data/*.tsv；下一次 make run 会按 FUNCS 重新生成
 ```
 
 性能说明（相对旧实现）：预计算交换矩阵 `W` 的同时生成转置 `W^T`，使
@@ -189,8 +194,9 @@ CGA / Beta 等非因子化核仍保持原物理公式，仅受益于连续访问
 每个泛函的结果单独写到 `data/<name>.tsv`（例如 `data/HF.tsv`、
 `data/GEO.tsv`、`data/Power_0.55.tsv`）。这样新增/修改一个泛函时只需
 重跑该泛函（`make geo` 或 `./build/rdmft_heg --funcs <name> --force`），
-无需重复跑其他泛函的全部 `r_s` 扫描。`scripts/plot_results.py` 会自动
-读取 `data/` 目录下所有 `*.tsv` 并叠在同一张图上。
+无需重复跑其他泛函的全部 `r_s` 扫描。`scripts/plot_results.py` 只叠 PW92 与
+`plot_common.py` 中列出的几条泛函（与 `plot_nk.py` 一致）。`make nk-data` 导出
+`data/nk/` 后，`make plot` 里的 `plot_nk.py` 默认 `--rs auto`：只画目录里**已有** nk 数据对应的 `r_s`（无长串缺文件告警）。
 
 ```bash
 # 选项 B：CMake
@@ -198,6 +204,8 @@ cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ./build/rdmft_heg --help
+# 直接跑二进制时必须带 --funcs，例如：
+# ./build/rdmft_heg --funcs Mueller,CGA --rs 2 --out-dir data
 ```
 
 > 编译需要 C++17 编译器（推荐 `g++` ≥ 9）。`scripts/plot_results.py`
@@ -208,9 +216,9 @@ ctest --test-dir build --output-on-failure
 ```
 rdmft_heg [选项]
   --rs   <列表>       逗号分隔的 r_s 值，如 0.5,1,2,5
-  --funcs <列表>      逗号分隔的泛函，如 HF,Mueller,Power@0.55,GEO,OptGM@0.5;0.71;0.5
+  --funcs <列表>      **必填**，逗号分隔泛函，如 HF,Mueller,Power@0.55,OptGM@a;b;c（分号分隔）
   --N    <整数>       k 方向网格点数（奇数，默认 401）
-  --kmax <浮点>       k_max 取 (factor × k_F(r_s))，默认 6
+  --kmax <浮点>       k_max 取 (factor × k_F(r_s))，默认 3
   --out-dir <目录>    每个泛函一个 .tsv 文件的输出目录，默认 data
   --force             覆盖已存在的 .tsv（默认跳过）
   --verbose           打印自洽迭代日志
@@ -264,7 +272,7 @@ if (key == "MyFunc") return std::make_unique<MyFunctional>();
 make run                        # 增量：只跑 data/MyFunc.tsv 还不存在的项
 # 或者只重算单个：
 ./build/rdmft_heg --funcs MyFunc --force --out-dir data
-make plot                       # 自动 pick up data/MyFunc.tsv 一并入图
+make plot                       # 重画关联能与 n(k)；新泛函入图需改 scripts/plot_common.py 的 WANTED_SERIES
 ```
 
 ---
