@@ -1,0 +1,4 @@
+# Optional: SciPy enables L-BFGS-B / Powell in optimize_optGM.py.
+# NumPy alone is enough (built-in Nelder-Mead fallback).
+numpy>=1.20
+scipy>=1.7

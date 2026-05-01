@@ -67,6 +67,14 @@ E_xc/V = -(1 / (2π³)) ∬₀^∞ k k' K(n(k), n(k'))
   是单调递减函数（前提是 `U_alpha,i >= 0`），因此可对每个网格点用
   一维二分把 `n_i` 反解出来；外层照常用 `mu` 二分满足密度约束。
 
+* **optGM**（optimized geometric mean）：与 GEO 相同的三条通道
+  `n_i n_j`、`(n_i n_j)^{1/2}`、`(n_i n_j)^{3/4}`，但混合权重为
+  `w1=a^2`、`w2=b^2`、`w3=c^2`，其中 `(a,b,c)` 在单位球面上（程序会对输入
+  做归一化，使 `a^2+b^2+c^2=1`，从而 `K(1,1)=1`）。CLI 使用分号分隔角度
+  （因为 `--funcs` 列表本身用逗号分隔），例如
+  `OptGM@0.5;0.70710678;0.5`。可用 `python3 scripts/optimize_optGM.py` 在 PW92
+  参考下拟合 `(a,b,c)`（仅需 NumPy；可选安装 SciPy 以使用 L-BFGS-B）。
+
 * **Beta**：将 CGA 的空穴部分推广为可调指数
 
   ```
@@ -192,7 +200,7 @@ ctest --test-dir build --output-on-failure
 ```
 rdmft_heg [选项]
   --rs   <列表>       逗号分隔的 r_s 值，如 0.5,1,2,5
-  --funcs <列表>      逗号分隔的泛函，如 HF,Mueller,Power@0.55,Power@0.58,GEO
+  --funcs <列表>      逗号分隔的泛函，如 HF,Mueller,Power@0.55,GEO,OptGM@0.5;0.71;0.5
   --N    <整数>       k 方向网格点数（奇数，默认 401）
   --kmax <浮点>       k_max 取 (factor × k_F(r_s))，默认 6
   --out-dir <目录>    每个泛函一个 .tsv 文件的输出目录，默认 data

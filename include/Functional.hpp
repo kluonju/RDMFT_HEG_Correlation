@@ -291,6 +291,76 @@ public:
     }
 };
 
+// optGM (optimized geometric mean).  Same three factorized channels as GEO
+// (f1 = n, f2 = sqrt(n), f3 = n^{3/4}) but with tunable nonnegative weights
+//
+//     K_optGM(n_i, n_j) = w1 n_i n_j + w2 (n_i n_j)^{1/2} + w3 (n_i n_j)^{3/4},
+//
+// where w1 = alpha^2, w2 = beta^2, w3 = gamma^2 and alpha^2 + beta^2 + gamma^2 = 1,
+// so K(1, 1) = 1 (HF saturation).  GEO in this codebase corresponds to
+// (w1, w2, w3) = (1/4, 1/2, 1/4).
+class OptGMFunctional : public Functional {
+public:
+    explicit OptGMFunctional(double alpha, double beta, double gamma) {
+        const double sq = alpha * alpha + beta * beta + gamma * gamma;
+        const double nrm = std::sqrt(sq);
+        if (nrm < 1.0e-15) {
+            // Degenerate input: fall back to equal mixing on the sphere.
+            alpha_ = beta_ = gamma_ = 1.0 / std::sqrt(3.0);
+        } else {
+            alpha_ = alpha / nrm;
+            beta_  = beta / nrm;
+            gamma_ = gamma / nrm;
+        }
+        w1_ = alpha_ * alpha_;
+        w2_ = beta_ * beta_;
+        w3_ = gamma_ * gamma_;
+    }
+
+    double w1() const { return w1_; }
+    double w2() const { return w2_; }
+    double w3() const { return w3_; }
+    double alpha() const { return alpha_; }
+    double beta() const { return beta_; }
+    double gamma() const { return gamma_; }
+
+    std::string name() const override {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf),
+                      "optGM(a=%.4f,b=%.4f,c=%.4f)", alpha_, beta_, gamma_);
+        return std::string(buf);
+    }
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+    double kernel(double ni, double nj) const override {
+        const double p = ni * nj;
+        if (p <= 0.0) return 0.0;
+        const double s12 = std::sqrt(p);
+        const double s34 = std::pow(p, 0.75);
+        return w1_ * p + w2_ * s12 + w3_ * s34;
+    }
+    double kernel_grad(double ni, double nj) const override {
+        const double eps = 1.0e-14;
+        const double nic = (ni > eps) ? ni : eps;
+        const double njc = (nj > eps) ? nj : eps;
+        const double pc  = nic * njc;
+        const double ds12 = 0.5 * std::sqrt(njc / nic);
+        const double ds34 = 0.75 * njc * std::pow(pc, -0.25);
+        return w1_ * njc + w2_ * ds12 + w3_ * ds34;
+    }
+
+private:
+    double alpha_;
+    double beta_;
+    double gamma_;
+    double w1_, w2_, w3_;
+};
+
 // BBC1 (Gritsenko, Pernal, Baerends 2005).  In a plane-wave basis it reduces
 // to using the Mueller kernel everywhere except that pairs of "weakly
 // occupied" orbitals (n_i, n_j < 1/2 in the paramagnetic case) get a sign
@@ -349,6 +419,17 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     if (key == "Power")   return std::make_unique<PowerFunctional>(alpha);
     if (key == "BBC1")    return std::make_unique<BBC1Functional>();
     if (key == "GEO")     return std::make_unique<GEOFunctional>();
+    // OptGM@a;b;c with three floats separated by ';' (commas are reserved for
+    // the driver's --funcs list).  Angles are normalized to a^2+b^2+c^2 = 1;
+    // weights on the three GEO channels are a^2, b^2, c^2.
+    if (key.rfind("OptGM@", 0) == 0) {
+        const std::string rest = key.substr(6);
+        double a = 0.0, b = 0.0, c = 0.0;
+        if (std::sscanf(rest.c_str(), "%lf;%lf;%lf", &a, &b, &c) == 3) {
+            return std::make_unique<OptGMFunctional>(a, b, c);
+        }
+        return nullptr;
+    }
     // The Beta functional needs an explicit exponent; callers should use
     // make_functional("Beta", beta) explicitly (alpha is reused as beta).
     if (key == "Beta")    return std::make_unique<BetaFunctional>(alpha);

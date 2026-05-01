@@ -58,7 +58,9 @@ void print_help() {
         "  --rs <list>          comma-separated rs values\n"
         "  --funcs <list>       comma-separated functionals\n"
         "                       (HF, Mueller, GU, CGA, BBC1, GEO,\n"
-        "                        Power@<alpha>, Beta@<beta>)\n"
+        "                        OptGM@<a>;<b>;<c>, Power@<alpha>, Beta@<beta>)\n"
+        "                       OptGM: use ';' between angles (commas split --funcs).\n"
+        "                       Angles are normalized to a^2+b^2+c^2=1; weights are a^2,b^2,c^2.\n"
         "  --N <int>            #grid points (odd, default 401)\n"
         "  --kmax <float>       k_max in units of kF(min(rs)) (default 6)\n"
         "  --out-dir <dir>      directory for per-functional TSVs (default data)\n"
@@ -114,6 +116,9 @@ std::unique_ptr<Functional> make(const std::string& key) {
         double beta = std::stod(key.substr(5));
         return std::make_unique<BetaFunctional>(beta);
     }
+    if (key.rfind("OptGM@", 0) == 0) {
+        return make_functional(key);
+    }
     return make_functional(key);
 }
 
@@ -124,7 +129,8 @@ std::unique_ptr<Functional> make(const std::string& key) {
 std::string filename_for(const std::string& key) {
     std::string s = key;
     for (char& c : s) {
-        if (c == '@')      c = '_';
+        if (c == '@')       c = '_';
+        else if (c == ';')  c = '_';
         else if (c == '/') c = '_';
         else if (c == ' ') c = '_';
     }

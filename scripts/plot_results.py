@@ -30,6 +30,7 @@ COLORS = {
     "GU":            ("#1f77b4", ":",  "x"),
     "CGA":           ("#ff7f0e", "-",  "D"),
     "GEO":           ("#000080", "-",  "*"),
+    "optGM":         ("#006400", "-",  "h"),
     "BBC1":          ("#9b59b6", "-",  ">"),
     "Power(0.55)":   ("#d62728", "-",  "s"),
     "Power(0.58)":   ("#2ca02c", "-",  "o"),
@@ -85,6 +86,8 @@ def pretty_name(fn: str) -> str:
             return f"Beta({float(beta):.2f})"
         except ValueError:
             return fn
+    if fn.startswith("optGM("):
+        return "optGM"
     return fn
 
 
@@ -121,6 +124,7 @@ def main():
         if name == "GU":      return (2, 0, name)
         if name == "CGA":     return (3, 0, name)
         if name == "GEO":     return (3, 1, name)
+        if name == "optGM":   return (3, 2, name)
         if name.startswith("Power("):
             try:
                 a = float(name[6:-1])
