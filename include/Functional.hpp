@@ -273,7 +273,7 @@ public:
         if (p <= 0.0) return 0.0;
         const double s12 = std::sqrt(p);            // (n_p n_q)^{1/2}
         const double s34 = std::pow(p, 0.75);       // (n_p n_q)^{3/4}
-        return 0.25 * (p + s12 + 2.0 * s34);
+        return 0.25 * (p + 2.0 * s12 +  s34);
     }
     double kernel_grad(double ni, double nj) const override {
         // d K / d n_i with n_j held fixed.  Differentiate term by term:
