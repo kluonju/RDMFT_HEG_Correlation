@@ -36,7 +36,7 @@ DATA_DIR := data
 RS_LIST  := 0.2,0.3,0.5,1,2,3,4,5,6,8,10
 # Default sweep: only these functionals (edit FUNCS). OptGM uses ';' — quote for the shell.
 # OptGM: (a;b;c) on unit sphere; weights w1,w2,w3 = a^2,b^2,c^2 = 0.00675,0.64213,0.35112
-FUNCS := Mueller,CGA,OptGM@-0.0821547206643049;0.8013311419635793;0.5925545538598386,Power@0.55,Power@0.58
+FUNCS := Mueller,CGA,CHF,BBC3,OptGM@-0.0821547206643049;0.8013311419635793;0.5925545538598386,Power@0.55,Power@0.58
 
 NK_DIR := data/nk
 NK_FUNCS := $(FUNCS)

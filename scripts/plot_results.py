@@ -2,7 +2,7 @@
 """Plot RDMFT correlation energies vs rs from per-functional TSVs.
 
 Reads ``*.tsv`` files under ``--in`` and overlays the PW92 QMC reference with
-Müller, CGA, optGM, and Power(0.55/0.58) (see ``plot_common.WANTED_SERIES``).
+Müller, CGA, CHF, optGM, and Power(0.55/0.58) (see ``plot_common.WANTED_SERIES``).
 The directory layout matches the rdmft_heg driver:
 
     data/
@@ -51,21 +51,21 @@ def _fmt_rs_tick(rs: float) -> str:
 
 
 def apply_rs_ticks(ax, series: dict, qmc_rs: list[float]) -> None:
-    """Label every distinct r_s from data on the (log) x-axis; span 0.2–10."""
+    """Label every distinct r_s from data on the (log) x-axis; span 0.15–10."""
     tick_vals = {float(r) for r in qmc_rs}
     for pts in series.values():
         for r, _ in pts:
             tick_vals.add(float(r))
     ticks = sorted(tick_vals)
     if len(ticks) < 2:
-        ax.set_xlim(0.1, 11.0)
+        ax.set_xlim(0.15, 11.0)
         return
     ax.set_xticks(ticks)
     ax.set_xticklabels([_fmt_rs_tick(t) for t in ticks])
     ax.tick_params(axis="x", which="major", labelsize=8)
     for lab in ax.get_xticklabels():
         lab.set_horizontalalignment("center")
-    ax.set_xlim(0.1, 11.0)
+    ax.set_xlim(0.15, 11.0)
 
 
 def parse_tsv(path: Path):
@@ -163,7 +163,15 @@ def main():
     ax.set_ylabel(r"Correlation energy per electron $E_c$ (hartree)")
     ax.axhline(0, color="0.6", linewidth=0.6, linestyle="-")
     ax.grid(True, which="both", alpha=0.25)
-    ax.set_ylim(-0.20, 0.02)
+    # Y-axis from data + QMC (padding); keeps all wanted curves visible.
+    ec_vals = [e for pts in series.values() for (_, e) in pts] + qmc_e
+    if ec_vals:
+        lo, hi = min(ec_vals), max(ec_vals)
+        span = max(hi - lo, 1e-6)
+        pad = 0.06 * span + 0.005
+        ax.set_ylim(lo - pad, hi + pad)
+    else:
+        ax.set_ylim(-0.20, 0.02)
     ax.legend(loc="lower right", fontsize=9, ncol=2, framealpha=0.92)
 
     out = Path(args.out_path)

@@ -54,7 +54,7 @@ void print_help() {
         "Usage: rdmft_heg [options]\n"
         "  --rs <list>          comma-separated rs values\n"
         "  --funcs <list>       **required** comma-separated functionals\n"
-        "                       (HF, Mueller, GU, CGA, BBC1, GEO,\n"
+        "                       (HF, Mueller, GU, CGA, CHF (alias CHF), BBC1, BBC3, GEO,\n"
         "                        OptGM@<a>;<b>;<c>, Power@<alpha>, Beta@<beta>)\n"
         "                       OptGM: use ';' between angles (commas split --funcs).\n"
         "                       Angles are normalized to a^2+b^2+c^2=1; weights are a^2,b^2,c^2.\n"

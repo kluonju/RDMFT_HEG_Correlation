@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -117,21 +118,65 @@ public:
 };
 
 // CGA functional [G. Csanyi, S. Goedecker, T. A. Arias,
-// Phys. Rev. A 65, 032510 (2002)].  Non-factorizable two-body kernel
+// Phys. Rev. A 65, 032510 (2002)].  Pairwise kernel in the same JK convention as
+// ``EnergyEvaluator``, with an explicit factor 1/2 on the bracket (Csányi–
+// Goedecker–Arias tensor-product structure with sqrt(n(2-n)) hole):
 //
-//     K_CGA(n_i, n_j) = n_i n_j + sqrt(n_i (1 - n_i)) * sqrt(n_j (1 - n_j))
+//     K_CGA(n_i, n_j) = (1/2) * [ n_i n_j
+//                               + sqrt(n_i(2-n_i)) * sqrt(n_j(2-n_j)) ].
 //
-// The first piece reproduces the Hartree-Fock exchange while the second
-// "hole" piece introduces dynamic correlation that is large for fractional
-// occupations.  CGA is known to give an excellent description of the high-
-// density HEG correlation energy and to outperform HF at metallic densities.
+// Occupations are per spin-orbital in [0, 1]; n(2-n) >= 0 on that interval.
 //
-// The kernel is symmetric: K(n_i, n_j) = K(n_j, n_i), so the same
-// kernel_grad signature used by BBC1Functional applies (derivative w.r.t.
-// the first argument).
+// The kernel is symmetric; ``kernel_grad`` is dK/dn_i at fixed n_j.
 class CGAFunctional : public Functional {
 public:
     std::string name() const override { return "CGA"; }
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+    double kernel(double ni, double nj) const override {
+        static constexpr double half = 0.5;
+        const double hi = hole(ni);
+        const double hj = hole(nj);
+        return half * (ni * nj + hi * hj);
+    }
+    double kernel_grad(double ni, double nj) const override {
+        static constexpr double half = 0.5;
+        const double hj = hole(nj);
+        return half * (nj + dhole(ni) * hj);
+    }
+
+private:
+    static double hole(double n) {
+        if (n <= 0.0 || n >= 1.0) return 0.0;
+        const double x = n * (2.0 - n);
+        return std::sqrt(std::max(x, 0.0));
+    }
+    static double dhole(double n) {
+        const double eps = 1.0e-12;
+        const double x = n * (2.0 - n);
+        if (x <= eps) {
+            const double xc = eps;
+            return (1.0 - n) / std::sqrt(xc);
+        }
+        return (1.0 - n) / std::sqrt(x);
+    }
+};
+
+// CHF — “corrected Hartree–Fock”-type kernel [G. Csányi, T. A. Arias,
+// Phys. Rev. B 61, 7348 (2000)], historically also labeled CHF in some notes.
+// In this driver’s JK convention (same as ``CGAFunctional`` up to the hole):
+//
+//     K_CHF(n_i, n_j) = n_i n_j + sqrt(n_i(1-n_i)) * sqrt(n_j(1-n_j)).
+//
+// The CLI accepts ``CHF`` as an alias for ``CHF`` (``make_functional``).
+class CHFFunctional : public Functional {
+public:
+    std::string name() const override { return "CHF"; }
     double f(double n) const override {
         return n > 0.0 ? std::sqrt(n) : 0.0;
     }
@@ -158,9 +203,6 @@ private:
         const double eps = 1.0e-12;
         const double x = n * (1.0 - n);
         if (x <= eps) {
-            // Cap the derivative near the endpoints to avoid divergences in
-            // the projected-gradient solver.  The cap matches |dh/dn| at
-            // n = eps (or 1 - eps).
             const double xc = eps;
             return (1.0 - 2.0 * n) / (2.0 * std::sqrt(xc));
         }
@@ -175,7 +217,7 @@ private:
 //
 // Special / limiting cases:
 //
-//   * beta = 1/2  -> exactly the CGA kernel.
+//   * beta = 1/2  -> same bracket as ``CHFFunctional`` (sqrt(n(1-n)) hole).
 //   * beta -> +infinity  -> the bracket vanishes (since 0 <= n(1-n) <= 1/4)
 //                         and we recover Hartree-Fock.
 //   * beta -> 0          -> the hole saturates at 1 for any fractional
@@ -411,6 +453,76 @@ private:
     }
 };
 
+// BBC3 in the plane-wave HEG coincides with BBC2 [N. N. Lathiotakis, N. Helbig,
+// E. K. U. Gross, Phys. Rev. B 75, 195120 (2007)]: bonding vs anti-bonding
+// distinctions in the molecular BBC3 definition collapse, so we
+// implement the BBC2 pair rule (Gritsenko–Pernal–Baerends hierarchy as quoted
+// in PRB 75):
+//
+//   weak–weak (n < 1/2):    K = -sqrt(n_i n_j)
+//   strong–strong (> 1/2): K =  n_i n_j
+//   otherwise:             K = +sqrt(n_i n_j)
+//
+// The n = 1/2 dividing surface is smoothed like ``BBC1Functional`` for stable
+// ``kernel_grad`` in the projected-gradient solver.
+class BBC3Functional : public Functional {
+public:
+    explicit BBC3Functional(double smooth = 0.05) : smooth_(smooth) {}
+    std::string name() const override { return "BBC3"; }
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+    double kernel(double ni, double nj) const override {
+        const double w_i = w(ni), w_j = w(nj);
+        const double a_ww = w_i * w_j;
+        const double a_ss = (1.0 - w_i) * (1.0 - w_j);
+        const double a_rm = std::max(0.0, 1.0 - a_ww - a_ss);
+        const double s_ij = std::sqrt(std::max(ni * nj, 0.0));
+        return a_ww * (-s_ij) + a_ss * (ni * nj) + a_rm * s_ij;
+    }
+    double kernel_grad(double ni, double nj) const override {
+        const double w_i  = w(ni), w_j = w(nj);
+        const double dw_i = w_grad(ni);
+        const double a_ww = w_i * w_j;
+        const double a_ss = (1.0 - w_i) * (1.0 - w_j);
+        const double a_rm = std::max(0.0, 1.0 - a_ww - a_ss);
+
+        const double da_ww = dw_i * w_j;
+        const double da_ss = -dw_i * (1.0 - w_j);
+        const double da_rm = -da_ww - da_ss;
+
+        const double s_ij = std::sqrt(std::max(ni * nj, 0.0));
+        const double eps  = 1.0e-14;
+        const double dsqrt_dni =
+            (s_ij > 0.0) ? (0.5 * nj / s_ij) : (0.5 * std::sqrt(std::max(nj / eps, 0.0)));
+
+        const double K_ww = -s_ij;
+        const double K_ss = ni * nj;
+        const double K_rm = s_ij;
+
+        const double dKww_dni = -dsqrt_dni;
+        const double dKss_dni = nj;
+        const double dKrm_dni = dsqrt_dni;
+
+        return da_ww * K_ww + a_ww * dKww_dni + da_ss * K_ss + a_ss * dKss_dni
+             + da_rm * K_rm + a_rm * dKrm_dni;
+    }
+
+private:
+    double smooth_;
+    double w(double n) const {
+        return 0.5 * (1.0 - std::tanh((n - 0.5) / smooth_));
+    }
+    double w_grad(double n) const {
+        const double t = std::tanh((n - 0.5) / smooth_);
+        return -0.5 * (1.0 - t * t) / smooth_;
+    }
+};
+
 // Convenience factory.
 inline std::unique_ptr<Functional> make_functional(const std::string& key,
                                                    double alpha = 0.55) {
@@ -418,8 +530,11 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     if (key == "Mueller" || key == "BB") return std::make_unique<MuellerFunctional>();
     if (key == "GU")      return std::make_unique<GUFunctional>();
     if (key == "CGA")     return std::make_unique<CGAFunctional>();
+    // Legacy label ``CHF`` maps to CHF (corrected Hartree–Fock kernel).
+    if (key == "CHF" || key == "CHF") return std::make_unique<CHFFunctional>();
     if (key == "Power")   return std::make_unique<PowerFunctional>(alpha);
     if (key == "BBC1")    return std::make_unique<BBC1Functional>();
+    if (key == "BBC3")   return std::make_unique<BBC3Functional>();
     if (key == "GEO")     return std::make_unique<GEOFunctional>();
     // OptGM@a;b;c with three floats separated by ';' (commas are reserved for
     // the driver's --funcs list).  Angles are normalized to a^2+b^2+c^2 = 1;

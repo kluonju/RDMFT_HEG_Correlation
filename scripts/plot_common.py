@@ -9,6 +9,7 @@ from __future__ import annotations
 WANTED_SERIES = (
     "Mueller",
     "CGA",
+    "CHF",
     "optGM",
     "Power(0.55)",
     "Power(0.58)",
@@ -23,6 +24,7 @@ SUBSET_STYLE: dict[str, tuple[str | None, str, str | None]] = {
     MONTE_CARLO_LABEL: ("black", "-", None),
     "Mueller": ("#21c7d6", "-", "o"),
     "CGA": ("#ff7f0e", "-", "D"),
+    "CHF": ("#9467bd", "--", "^"),
     "optGM": ("#006400", "-", "h"),
     "Power(0.55)": ("#d62728", "-", "s"),
     "Power(0.58)": ("#2ca02c", "-", "o"),
@@ -39,6 +41,9 @@ def pretty_functional_name(fn: str) -> str:
             return fn
     if fn.startswith("optGM("):
         return "optGM"
+    # Older TSVs used ``CHF``; kernel is now labeled ``CHF`` in the driver.
+    if fn == "CHF":
+        return "CHF"
     return fn
 
 

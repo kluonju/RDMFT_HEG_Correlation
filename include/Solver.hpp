@@ -126,14 +126,18 @@ inline std::vector<double> initial_step(double rs, const Grid& g) {
     return n;
 }
 
-// Solve dh(n) = s for n in [0,1], where dh(n) = (1 - 2n) / (2 sqrt(n(1-n)))
-// (the derivative of the CGA "hole" h(n) = sqrt(n(1-n))).  Closed-form:
-//
-//     u := 1 - 2n  satisfies  u^2 (1 + s^2) = s^2   =>   u = s / sqrt(1 + s^2),
-//
-// with the sign of u tracking the sign of s automatically.  Hence
-// n = 0.5 (1 - s / sqrt(1 + s^2)).
-inline double invert_dh_cga(double s) {
+// For CGA, g(n) = sqrt(n(2-n)) on [0,1] and g'(n) = (1-n)/sqrt(n(2-n)).
+// Solve g'(n) = s for n in [0,1].  Squaring (1-n)^2 = s^2 n(2-n) gives a
+// quadratic; the physical root is
+//     n = 1 - s / sqrt(1 + s^2).
+inline double invert_h2_prime_for_cga(double s) {
+    return std::clamp(1.0 - s / std::sqrt(1.0 + s * s), 0.0, 1.0);
+}
+
+// CHF hole h(n) = sqrt(n(1-n)); solve h'(n) = s with
+// h'(n) = (1 - 2n) / (2 sqrt(n(1-n))).  With u := 1 - 2n,
+// u^2 (1 + s^2) = s^2  =>  n = 0.5 (1 - s / sqrt(1 + s^2)).
+inline double invert_dh_cha(double s) {
     const double u = s / std::sqrt(1.0 + s * s);
     return std::clamp(0.5 * (1.0 - u), 0.0, 1.0);
 }
@@ -321,7 +325,10 @@ update_occupations_optGM(double mu,
 //
 //     K(n_i, n_j) = n_i n_j + g(n_i) g(n_j),
 //
-// covering CGA (g(n) = sqrt(n(1-n))) and the Beta family
+// or, for CGA only, K = a [ n_i n_j + g(n_i) g(n_j) ] with a = 1/2 (see
+// ``el_scale`` in ``update_occupations_additive``).
+//
+// covering CGA, CHF (additive hole), and Beta
 // (g(n) = (n(1-n))^beta).  For each i we solve
 //
 //     U_HF_i + g'(n_i) U_g_i = pi k_i (k_i^2/2 - mu)
@@ -335,16 +342,18 @@ update_occupations_additive(double mu,
                             const std::vector<double>& U_HF,
                             const std::vector<double>& U_g,
                             const Grid& g,
-                            Inverter invert_dg) {
+                            Inverter invert_dg,
+                            double el_scale = 1.0) {
     constexpr double pi = M_PI;
     const std::size_t N = g.n();
     std::vector<double> n(N, 0.0);
     const double tiny = 1.0e-14;
+    const double esc = (el_scale > 0.0) ? el_scale : 1.0;
     for (std::size_t i = 0; i < N; ++i) {
         const double k  = g.k[i];
         if (k <= 0.0) { n[i] = 1.0; continue; }
         const double R  = pi * k * (0.5 * k * k - mu);
-        const double dU = R - U_HF[i];
+        const double dU = R / esc - U_HF[i];
         if (std::abs(U_g[i]) < tiny) {
             // No hole contribution: revert to the HF step rule.  Since the
             // sign of U_HF compares against R, this matches the HF EL.
@@ -386,9 +395,8 @@ inline std::vector<double> compute_U_with(const std::vector<double>& nv,
 }
 
 // Smeared initial guess: a sigmoid centred at the Fermi wave vector, which
-// is more friendly to non-factorizable additive kernels (CGA / Beta) whose
-// EL equation requires non-zero g(n) g'(n) to engage.  width controls the
-// fractional smearing relative to k_F.
+// helps Beta, CGA / CHF, GEO, and optGM escape a trivial HF-step-like fixed
+// point.  width controls the fractional smearing relative to k_F.
 inline std::vector<double>
 initial_smeared(double rs, const Grid& g, double width = 0.10) {
     const std::size_t N = g.n();
@@ -402,17 +410,13 @@ initial_smeared(double rs, const Grid& g, double width = 0.10) {
 }
 
 // Self-consistent solve for any Functional.  Power-family functionals use the
-// closed-form occupation update; non-factorizable but additive kernels (CGA,
-// Beta) use a dedicated closed-form 1-D inverter; other functionals
-// (e.g. BBC1) fall back to a projected-gradient step driven by the analytic
-// dE/dn.  All branches use bisection on the chemical potential to enforce
-// particle-number conservation at every iteration.
+// closed-form occupation update; CGA, CHF, and Beta use the additive branch
+// with a dedicated 1-D inverter; BBC1, BBC3, and GEO / optGM use projected
+// gradient.  All branches bisect on mu for particle conservation.
 //
-// For the additive (CGA / Beta) branch the energy landscape has a competing
-// HF minimum (every step occupation is a stationary point of K_CGA) and a
-// correlated, fractionally-occupied minimum.  We therefore try several
-// initial guesses with different smearing widths and keep the lowest-energy
-// converged solution.
+// Beta, CGA, and CHF can show a competing HF-like minimum; we therefore try
+// several smeared initial guesses and keep the lowest-energy converged result
+// when ``needs_multistart`` is set.
 inline SolveResult
 solve_rdmft(double rs,
             const Functional& F,
@@ -431,15 +435,19 @@ solve_rdmft(double rs,
     const bool factorized = (pf != nullptr) || (hf != nullptr)
                           || (mu_f != nullptr) || (gu_f != nullptr);
 
-    // Detect additive-kernel functionals K = n_i n_j + g(n_i) g(n_j).
-    const CGAFunctional*  cga  = dynamic_cast<const CGAFunctional*>(&F);
-    const BetaFunctional* beta_f = dynamic_cast<const BetaFunctional*>(&F);
-    const bool additive = (cga != nullptr) || (beta_f != nullptr);
+    // Additive kernel: CHF/Beta use K = n_i n_j + g_i g_j; CGA uses
+    // K = (1/2) [ n_i n_j + g_i g_j ] (see ``CGAFunctional::kernel``).
+    const CGAFunctional*   cga   = dynamic_cast<const CGAFunctional*>(&F);
+    const CHFFunctional*   cha   = dynamic_cast<const CHFFunctional*>(&F);
+    const BetaFunctional*  beta_f = dynamic_cast<const BetaFunctional*>(&F);
+    const bool additive =
+        (cga != nullptr) || (cha != nullptr) || (beta_f != nullptr);
 
     // GEO uses a non-factorizable multi-power kernel; it is solved via the
     // generic projected-gradient branch below (no special-case here).
     const GEOFunctional*   geo   = dynamic_cast<const GEOFunctional*>(&F);
     const OptGMFunctional* optgm = dynamic_cast<const OptGMFunctional*>(&F);
+    const BBC3Functional*  bbc3  = dynamic_cast<const BBC3Functional*>(&F);
 
     double alpha = 1.0;
     if (pf)        alpha = pf->alpha();
@@ -457,10 +465,10 @@ solve_rdmft(double rs,
     // the endpoints, so we deliberately seed a broad range of fractionally-
     // occupied initial conditions.  For factorized and generic functionals
     // one start (sharp step) is enough.
-    // Smeared multi-start helps non-factorizable kernels (additive CGA / Beta
-    // and the multi-power GEO) escape the trivial HF-step fixed point.
+    // Smeared multi-start helps additive CGA / CHF / Beta and GEO / optGM /
+    // BBC3 escape the trivial HF-step fixed point.
     const bool needs_multistart = additive || (geo != nullptr)
-                                  || (optgm != nullptr);
+                                  || (optgm != nullptr) || (bbc3 != nullptr);
     const std::vector<std::pair<bool, double>> starts = needs_multistart
         ? std::vector<std::pair<bool, double>>{
               {false, 0.05}, {false, 0.10}, {false, 0.20},
@@ -514,7 +522,8 @@ solve_rdmft(double rs,
 
     // Pick the appropriate hole inverter for additive kernels.
     auto invert_dg = [&](double s) -> double {
-        if (cga)    return invert_dh_cga(s);
+        if (cga)    return invert_h2_prime_for_cga(s);
+        if (cha)    return invert_dh_cha(s);
         if (beta_f) return invert_dgbeta(s, beta_f->beta());
         return 0.5;
     };
@@ -561,16 +570,20 @@ solve_rdmft(double rs,
                 : update_occupations_optGM(mu, U1, U2, U3, g, c1, c2, c3);
         } else if (additive) {
             // Additive kernel K = n_i n_j + g(n_i) g(n_j): closed-form update
-            // for n_i once mu is found by bisection.  We use a soft floor on
-            // n in [n_floor, 1 - n_floor] when computing g(n) so that even
+            // for n_i once mu is found by bisection.  We use a soft floor on n
+            // in [n_floor, 1 - n_floor] when computing g(n) so that even
             // near-saturated occupations contribute a finite hole U_g, which
             // lets the SCF escape the metastable HF-like fixed point.  The
             // floor is taken small enough that converged solutions are not
             // affected to leading order (energies use the unmodified n).
             const double n_floor = 1.0e-6;
+            const double el_scale = cga ? 0.5 : 1.0;
             auto g_of = [&](double n_) {
                 const double nc = std::clamp(n_, n_floor, 1.0 - n_floor);
                 if (cga) {
+                    return std::sqrt(std::max(nc * (2.0 - nc), 0.0));
+                }
+                if (cha) {
                     return std::sqrt(nc * (1.0 - nc));
                 }
                 if (beta_f) {
@@ -587,7 +600,7 @@ solve_rdmft(double rs,
                 for (int b = 0; b < opt.bisect_iter; ++b) {
                     double m = 0.5 * (lo + hi);
                     auto n_try = update_occupations_additive(
-                        m, U_HF, U_g, g, invert_dg);
+                        m, U_HF, U_g, g, invert_dg, el_scale);
                     if (density_of(n_try) > rho_target) hi = m;
                     else                                 lo = m;
                 }
@@ -595,7 +608,7 @@ solve_rdmft(double rs,
             };
             mu = bisect_mu_additive();
             n_target = update_occupations_additive(
-                mu, U_HF, U_g, g, invert_dg);
+                mu, U_HF, U_g, g, invert_dg, el_scale);
         } else {
             // Generic projected-gradient with bisection on mu.
             auto eps = EnergyEvaluator::pseudo_energy(n, g, W, F);

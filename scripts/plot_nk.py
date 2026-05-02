@@ -13,7 +13,8 @@ Example::
     python3 scripts/plot_nk.py --dir data/nk --rs auto --out figures/nk.png
 
 Only functionals listed in ``plot_common.WANTED_SERIES`` are drawn (same as
-the correlation-energy figure). The x-axis is fixed to ``0 <= k/k_F <= 3``.
+the correlation-energy figure, including CGA and CHF). The x-axis is fixed to
+``0 <= k/k_F <= 3``.
 """
 from __future__ import annotations
 
