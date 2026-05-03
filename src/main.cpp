@@ -41,8 +41,10 @@ struct Args {
         0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0
     };
     std::vector<std::string> funcs;  // must be set via --funcs (no silent default list)
+    // Standard sweep (Makefile / nk figures): 401 odd nodes, k_max = 3 k_F;
+    // ``Grid::uniform_trapezoid`` on [0, k_max] (composite trapezoid weights).
     int    N_grid = 401;
-    double k_max_factor = 3.0;   // multiplicative factor on kF (k / k_F <= k_max_factor)
+    double k_max_factor = 3.0;   // k_max = factor * k_F  (default 3 => k/k_F <= 3)
     std::string out_dir = "data";
     std::string nk_out_dir;  // if non-empty, write n(k) TSVs under this directory
     bool   force = false;
@@ -54,10 +56,11 @@ void print_help() {
         "Usage: rdmft_heg [options]\n"
         "  --rs <list>          comma-separated rs values\n"
         "  --funcs <list>       **required** comma-separated functionals\n"
-        "                       (HF, Mueller, GU, CGA, CHF (alias CHF), BBC1, BBC3, GEO,\n"
-        "                        OptGM@<a>;<b>;<c>, Power@<alpha>, Beta@<beta>)\n"
-        "                       OptGM: use ';' between angles (commas split --funcs).\n"
-        "                       Angles are normalized to a^2+b^2+c^2=1; weights are a^2,b^2,c^2.\n"
+        "                       (HF, Mueller, GU, CGA, CHF, BBC1, BBC3, GEO,\n"
+        "                        OptGeo@<a>;<b>;<c>, OptGM@lambda;alpha, Power@<alpha>, Beta@<beta>)\n"
+        "                       OptGeo: GEO-style three channels; three angles (two ';').\n"
+        "                       OptGM: (1-lambda) HF + lambda Power(alpha); two floats (one ';').\n"
+        "                       Shell: quote keys that contain ';' (e.g. --funcs 'OptGM@0.4;0.56').\n"
         "  --N <int>            #grid points (odd, default 401)\n"
         "  --kmax <float>       k_max = factor * k_F(r_s) at each r_s (default 3)\n"
         "  --out-dir <dir>      directory for per-functional TSVs (default data)\n"
@@ -117,7 +120,7 @@ std::unique_ptr<Functional> make(const std::string& key) {
         double beta = std::stod(key.substr(5));
         return std::make_unique<BetaFunctional>(beta);
     }
-    if (key.rfind("OptGM@", 0) == 0) {
+    if (key.rfind("OptGeo@", 0) == 0 || key.rfind("OptGM@", 0) == 0) {
         return make_functional(key);
     }
     return make_functional(key);
@@ -156,6 +159,23 @@ std::string nk_stem_for(const std::string& key) {
 
 int main(int argc, char** argv) {
     Args args = parse_args(argc, argv);
+    if (args.N_grid < 3) {
+        std::cerr << "rdmft_heg: --N must be at least 3 for the k grid\n";
+        return 1;
+    }
+    if ((args.N_grid % 2) == 0) {
+        std::cerr << "rdmft_heg: warning: --N must be odd; using " << (args.N_grid - 1)
+                  << " instead of " << args.N_grid << "\n";
+        args.N_grid -= 1;
+    }
+    if (args.N_grid < 3) {
+        std::cerr << "rdmft_heg: after odd correction, --N is too small\n";
+        return 1;
+    }
+    if (args.k_max_factor <= 1.0) {
+        std::cerr << "rdmft_heg: --kmax must be > 1 (need k_max > k_F)\n";
+        return 1;
+    }
     if (args.funcs.empty()) {
         std::cerr << "rdmft_heg: no functionals given; pass --funcs <comma-separated list>\n"
                      "Example: --funcs HF,Mueller,CGA\n";
@@ -206,12 +226,12 @@ int main(int argc, char** argv) {
             std::filesystem::create_directories(args.nk_out_dir);
         }
 
-        // Rebuild the Grid for each rs: k_max = factor * k_F, with extra nodes
-        // packed near k_F (graded_fermi_trapezoid) for sharp n(k) fronts.
+        // Rebuild the Grid for each rs: uniform k in [0, k_max], k_max = factor * k_F.
         for (double rs : args.rs_list) {
             const double kf    = HEG::kF(rs);
             const double k_max = args.k_max_factor * kf;
-            Grid g = Grid::graded_fermi_trapezoid(kf, k_max, args.N_grid);
+            Grid g = Grid::uniform_trapezoid(
+                k_max, static_cast<std::size_t>(args.N_grid));
             ExchangeKernel W  = ExchangeKernel::build(g);
 
             const double E_HF_per_N = HEG::HF_per_electron(rs);
@@ -231,18 +251,28 @@ int main(int argc, char** argv) {
                               args.nk_out_dir.c_str(),
                               nk_stem_for(key).c_str(),
                               rs);
-                std::ofstream nk(nk_name);
-                if (nk) {
-                    nk << std::scientific << std::setprecision(16);
-                    nk << "# rs=" << rs << " kF=" << kf << " k_max=" << k_max
-                       << "\n";
-                    nk << "# functional: " << F->name() << "\n";
-                    nk << "# k\tn\n";
-                    for (std::size_t i = 0; i < g.n(); ++i) {
-                        nk << g.k[i] << '\t' << r.n[i] << "\n";
-                    }
+                const std::filesystem::path nk_path(nk_name);
+                if (!r.converged) {
+                    std::error_code ec;
+                    std::filesystem::remove(nk_path, ec);
+                    std::cerr << "Warning: skip n(k) export (not converged): "
+                              << nk_path.string() << "\n";
                 } else {
-                    std::cerr << "Warning: cannot open " << nk_name << " for nk export\n";
+                    std::ofstream nk(nk_name);
+                    if (nk) {
+                        nk << std::scientific << std::setprecision(16);
+                        nk << "# rs=" << rs << " kF=" << kf << " k_max=" << k_max
+                           << "\n";
+                        nk << "# functional: " << F->name() << "\n";
+                        nk << "# converged: 1\n";
+                        nk << "# k\tn\n";
+                        for (std::size_t i = 0; i < g.n(); ++i) {
+                            nk << g.k[i] << '\t' << r.n[i] << "\n";
+                        }
+                    } else {
+                        std::cerr << "Warning: cannot open " << nk_name
+                                  << " for nk export\n";
+                    }
                 }
             }
 

@@ -13,10 +13,10 @@ namespace rdmft {
 //
 //     \int_0^{k_max} F(k) dk  ~=  \sum_i w_i F(k_i).
 //
-// ``graded_fermi_trapezoid`` concentrates nodes near k_F where n(k) drops from
-// ~1 to ~0, using the composite trapezoid rule on a non-uniform mesh (exact
-// for piecewise-linear n on the grid).  ``uniform_trapezoid`` / Simpson variants
-// remain for tests.  All routines are header-only.
+// The driver uses ``uniform_trapezoid`` on [0, k_max] with composite trapezoid
+// weights.  ``graded_fermi_trapezoid`` packs nodes near k_F (optional / legacy).
+// ``log_trapezoid`` (uniform in ln k from k_eps to k_max, with k[0]=0) is an
+// optional mesh for experiments.  All routines are header-only.
 struct Grid {
     std::vector<double> k;   // grid points (strictly increasing)
     std::vector<double> w;   // integration weights
@@ -56,6 +56,7 @@ struct Grid {
     }
 
     static Grid uniform_trapezoid(double k_max_, std::size_t N) {
+        assert(N >= 2u && "uniform_trapezoid needs at least two nodes");
         Grid g;
         g.k.resize(N);
         g.w.resize(N);
@@ -83,22 +84,24 @@ struct Grid {
         return uniform_trapezoid(h * static_cast<double>(N - 1), N);
     }
 
-    // Piecewise-uniform mesh: coarse outside an ~0.9 k_F band around the Fermi
-    // wavevector, dense inside, with k_F exactly a grid node.  Improves n(k)
-    // and energies when the occupation front is narrow compared to k_max.
+    // Piecewise-uniform mesh: coarse outside a band around k_F, dense inside,
+    // with k_F exactly a grid node.  ~80% of the dense cells sit at k <= k_F,
+    // and the left wing [0, k_lo] gets extra weight in the NL/NR split so
+    // k < k_F is well resolved for n(k) plots (use N=401, k_max = 3 k_F).
     static Grid graded_fermi_trapezoid(double k_F, double k_max_min,
                                        std::size_t N_target) {
         assert(k_F > 0.0 && k_max_min > k_F && N_target >= 21u);
 
-        // NM intervals in [k_lo, k_hi]; k_F = k_lo + j_F * h_m with j_F = NM/2.
-        // Leave at least ~8 nodes outside the band (coarse wings).
+        // NM intervals in [k_lo, k_hi]; k_F = k_lo + j_F * h_m (integer j_F).
         std::size_t NM = std::max<std::size_t>(
             8u, std::min((N_target * 13u) / 25u, N_target - 8u));
-        const double band_width = 0.9 * k_F;
-        const double h_m        = band_width / static_cast<double>(NM);
-        const std::size_t j_F   = NM / 2;
-        const double k_lo       = k_F - static_cast<double>(j_F) * h_m;
-        const double k_hi       = k_lo + static_cast<double>(NM) * h_m;
+        const double band_frac = 1.0;  // (k_hi - k_lo) / k_F
+        const double band      = band_frac * k_F;
+        const double h_m       = band / static_cast<double>(NM);
+        const std::size_t j_F  = std::max<std::size_t>(
+            1u, std::min((4u * NM) / 5u, NM - 1u));
+        const double k_lo      = k_F - static_cast<double>(j_F) * h_m;
+        const double k_hi      = k_lo + static_cast<double>(NM) * h_m;
 
         const std::size_t N_rem = N_target - 1u - NM;
         assert(N_rem >= 4u);
@@ -107,8 +110,12 @@ struct Grid {
         const double len_right = k_max_min - k_hi;
         assert(len_left > 0.0 && len_right > 0.0);
 
+        // Weight k < k_lo (uniform wing, all below k_F) so it keeps more nodes
+        // than a pure length-proportional split (k_lo is typically ~0.2 k_F).
+        constexpr double k_lo_mesh_weight = 2.0;
+        const double wleft = k_lo_mesh_weight * len_left;
         std::size_t NL = static_cast<std::size_t>(std::llround(
-            static_cast<double>(N_rem) * (len_left / (len_left + len_right))));
+            static_cast<double>(N_rem) * (wleft / (wleft + len_right))));
         NL = std::max<std::size_t>(2u, std::min(N_rem - 2u, NL));
         const std::size_t NR = N_rem - NL;
 
@@ -130,6 +137,35 @@ struct Grid {
             assert(x[i] > x[i - 1] && "graded k mesh must be strictly increasing");
         }
 
+        Grid g;
+        g.k     = std::move(x);
+        g.k_max = g.k.back();
+        g.w     = composite_trapezoid_weights(g.k);
+        return g;
+    }
+
+    // Logarithmic / geometric k mesh: k[0]=0, k[1..N-1] uniform in ln(k) from
+    // k_eps to k_max.  Resolves small k and the high-k tail; k_F is not an exact
+    // node (step n(k) is slightly smeared vs a Fermi-aligned mesh).
+    static Grid log_trapezoid(double k_F, double k_max_min, std::size_t N_target) {
+        assert(k_F > 0.0 && k_max_min > k_F && N_target >= 3u);
+        std::vector<double> x;
+        x.reserve(N_target);
+        x.push_back(0.0);
+        const double k_eps =
+            std::max(k_F * 1.0e-8, k_max_min * 1.0e-14);
+        assert(k_eps > 0.0 && k_eps < k_max_min);
+        const double ln0 = std::log(k_eps);
+        const double ln1 = std::log(k_max_min);
+        const double inv = 1.0 / static_cast<double>(N_target - 2u);
+        for (std::size_t i = 1; i < N_target; ++i) {
+            const double t = static_cast<double>(i - 1u) * inv;
+            x.push_back(std::exp(ln0 + t * (ln1 - ln0)));
+        }
+        assert(x.size() == N_target);
+        for (std::size_t i = 1; i < x.size(); ++i) {
+            assert(x[i] > x[i - 1] && "log k mesh must be strictly increasing");
+        }
         Grid g;
         g.k     = std::move(x);
         g.k_max = g.k.back();

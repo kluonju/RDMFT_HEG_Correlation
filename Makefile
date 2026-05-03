@@ -2,13 +2,16 @@
 #
 # Usage:
 #   make            -- build the main driver and the test binary
-#   make run / rerun -- only functionals in FUNCS (Makefile variable; not the whole codebase list)
+#   make run        -- only functionals in FUNCS; incremental (skip existing data/*.tsv).
+#   make rerun      -- same flags as run plus --force (overwrite every FUNCS TSV).  Both use the
+#                      driver's uniform k mesh on [0, k_max] (Grid::uniform_trapezoid in main.cpp).
 #   make geo        -- (re)compute only the GEO functional into data/GEO.tsv
-#   make optgm      -- (re)compute optGM (angles from data/log optimization)
-#   make plot       -- correlation_energy.png, nk.png, and nk_optgm.png (optGM n(k) vs r_s)
+#   make optgeo     -- (re)compute optGeo (angles from data/log optimization)
+#   make plot       -- all figures: correlation_energy, nk, nk_optgeo, nk_optgm
 #   make nk-data     -- export n(k) TSVs under data/nk (same funcs as correlation figure)
 #   make plot-nk     -- figures/nk.png (only r_s that exist under data/nk; --rs auto)
-#   make plot-nk-optgm -- figures/nk_optgm.png (optGM n(k) overlay only)
+#   make plot-nk-optgeo -- figures/nk_optgeo.png (optGeo n(k) overlay only)
+#   make plot-nk-optgm  -- figures/nk_optgm.png (optGM n(k) overlay; skips if no nk TSVs)
 #   make test       -- run the HF exchange unit test
 #   make clean      -- remove build artifacts
 #   make clean-data -- remove every per-functional TSV under data/
@@ -34,14 +37,14 @@ HEADERS := $(wildcard include/*.hpp)
 
 DATA_DIR := data
 RS_LIST  := 0.2,0.3,0.5,1,2,3,4,5,6,8,10
-# Default sweep: only these functionals (edit FUNCS). OptGM uses ';' — quote for the shell.
-# OptGM: (a;b;c) on unit sphere; weights w1,w2,w3 = a^2,b^2,c^2 = 0.00675,0.64213,0.35112
-FUNCS := Mueller,CGA,CHF,BBC3,OptGM@-0.0821547206643049;0.8013311419635793;0.5925545538598386,Power@0.55,Power@0.58
+# Default sweep: only these functionals (edit FUNCS). OptGeo uses ';' — quote for the shell.
+# OptGeo: (a;b;c) on unit sphere; weights w1,w2,w3 = a^2,b^2,c^2 = 0.00675,0.64213,0.35112
+FUNCS := Mueller,CGA,CHF,OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545538598386,Power@0.55,Power@0.58
 
 NK_DIR := data/nk
 NK_FUNCS := $(FUNCS)
 
-.PHONY: all run rerun geo optgm plot nk-data plot-nk plot-nk-optgm test clean clean-data
+.PHONY: all run rerun geo optgeo optgm plot nk-data plot-nk plot-nk-optgeo plot-nk-optgm test clean clean-data
 
 all: $(TARGET) $(TEST_BIN)
 
@@ -83,11 +86,20 @@ geo: $(TARGET)
 		--force
 
 # Angles match ``data/log`` recommended CLI (rounded); change if you re-fit.
+optgeo: $(TARGET)
+	mkdir -p $(DATA_DIR)
+	./$(TARGET) --N 401 --kmax 3 \
+		--rs $(RS_LIST) \
+		--funcs "OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545538598386" \
+		--out-dir $(DATA_DIR) \
+		--force
+
+# Sample three-weight OptGM sweep (edit weights; quote for shell).
 optgm: $(TARGET)
 	mkdir -p $(DATA_DIR)
 	./$(TARGET) --N 401 --kmax 3 \
 		--rs $(RS_LIST) \
-		--funcs "OptGM@-0.0821547206643049;0.8013311419635793;0.5925545538598386" \
+		--funcs 'OptGM@0.45;0.56' \
 		--out-dir $(DATA_DIR) \
 		--force
 
@@ -97,6 +109,8 @@ plot:
 		--out figures/correlation_energy.png
 	python3 scripts/plot_nk.py --dir $(NK_DIR) --rs auto \
 		--out figures/nk.png
+	python3 scripts/plot_nk_optgeo.py --dir $(NK_DIR) --rs auto \
+		--out figures/nk_optgeo.png
 	python3 scripts/plot_nk_optgm.py --dir $(NK_DIR) --rs auto \
 		--out figures/nk_optgm.png
 
@@ -111,6 +125,11 @@ plot-nk:
 	mkdir -p figures
 	python3 scripts/plot_nk.py --dir $(NK_DIR) --rs auto \
 		--out figures/nk.png
+
+plot-nk-optgeo:
+	mkdir -p figures
+	python3 scripts/plot_nk_optgeo.py --dir $(NK_DIR) --rs auto \
+		--out figures/nk_optgeo.png
 
 plot-nk-optgm:
 	mkdir -p figures

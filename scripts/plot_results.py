@@ -2,7 +2,8 @@
 """Plot RDMFT correlation energies vs rs from per-functional TSVs.
 
 Reads ``*.tsv`` files under ``--in`` and overlays the PW92 QMC reference with
-Müller, CGA, CHF, optGM, and Power(0.55/0.58) (see ``plot_common.WANTED_SERIES``).
+Müller, CGA, CHF, optGM, Power(0.55/0.58) (see ``plot_common.WANTED_SERIES``).
+Only rows with ``converged == 1`` are plotted (non-converged SCF points are dropped).
 The directory layout matches the rdmft_heg driver:
 
     data/
@@ -69,7 +70,7 @@ def apply_rs_ticks(ax, series: dict, qmc_rs: list[float]) -> None:
 
 
 def parse_tsv(path: Path):
-    """Yield (rs, fn, ec, ec_qmc) tuples from a single TSV file."""
+    """Yield (rs, fn, ec, ec_qmc) tuples from a single TSV file (converged rows only)."""
     with path.open() as f:
         for line in f:
             line = line.strip()
@@ -77,6 +78,14 @@ def parse_tsv(path: Path):
                 continue
             parts = line.split("\t")
             if len(parts) < 5:
+                continue
+            # Driver layout: ... rho_err, converged, iters (column index 9 = converged).
+            if len(parts) < 10:
+                continue
+            try:
+                if int(float(parts[9].strip())) != 1:
+                    continue
+            except ValueError:
                 continue
             try:
                 rs  = float(parts[0])
@@ -155,7 +164,7 @@ def main():
             marker=mk,
             label=name,
             linewidth=1.5,
-            markersize=5,
+            markersize=6 if name == "optGM" else 5,
         )
 
     apply_rs_ticks(ax, series, qmc_rs)

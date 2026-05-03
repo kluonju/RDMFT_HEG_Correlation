@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot optGM ``n(k)`` only: one curve per ``r_s`` on a single axes (``k/k_F``)."""
+"""Plot optGeo ``n(k)`` only: one curve per ``r_s`` on a single axes (``k/k_F``)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
@@ -17,23 +18,12 @@ import plot_nk as nk  # noqa: E402
 from plot_common import SUBSET_STYLE, pretty_functional_name  # noqa: E402
 
 
-def _is_optgm_nk_functional(fn: str) -> bool:
-    """True for OptGM@lam;alpha labels and legacy ``optGM(a=,b=,c=)`` nk exports."""
-    if pretty_functional_name(fn) == "optGM":
-        return True
-    s = fn.strip()
-    if s.startswith("optGM(") and "a=" in s and "lam=" not in s:
-        return True
-    return False
-
-
-def discover_rs_optgm(nk_dir: Path) -> list[float]:
-    """Sorted ``r_s`` for which an nk TSV exists with functional optGM."""
+def discover_rs_optgeo(nk_dir: Path) -> list[float]:
+    """Sorted ``r_s`` for which an nk TSV exists with functional optGeo (incl. old optGM(a=...) labels)."""
     seen: set[float] = set()
     for p in sorted(nk_dir.glob("*_rs*.tsv")):
         d = nk.load_nk_tsv(p)
-        fn = d.get("functional") or ""
-        if not _is_optgm_nk_functional(fn):
+        if pretty_functional_name(d["functional"]) != "optGeo":
             continue
         if d.get("nk_converged") is False:
             continue
@@ -45,17 +35,17 @@ def discover_rs_optgm(nk_dir: Path) -> list[float]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Overlay optGM n(k) vs k/k_F for several r_s on one figure."
+        description="Overlay optGeo n(k) vs k/k_F for several r_s on one figure."
     )
     ap.add_argument("--dir", type=Path, default=Path("data/nk"), help="nk TSV directory")
     ap.add_argument(
         "--rs",
         type=str,
         default="auto",
-        help="'auto' = every r_s that has an optGM nk TSV; else comma-separated r_s.",
+        help="'auto' = every r_s that has an optGeo nk TSV; else comma-separated r_s.",
     )
     ap.add_argument("--rs-tol", type=float, default=0.0005, help="File match tolerance")
-    ap.add_argument("--out", type=Path, default=Path("figures/nk_optgm.png"))
+    ap.add_argument("--out", type=Path, default=Path("figures/nk_optgeo.png"))
     ap.add_argument("--xmax", type=float, default=3.0, help="Upper limit for k/k_F")
     args = ap.parse_args()
 
@@ -64,21 +54,19 @@ def main() -> None:
 
     rs_arg = args.rs.strip()
     if rs_arg.lower() == "auto":
-        rs_list = discover_rs_optgm(args.dir)
+        rs_list = discover_rs_optgeo(args.dir)
         if not rs_list:
-            print(
-                f"Warning: no optGM nk TSVs under {args.dir}; "
-                "skipping figures/nk_optgm.png (add OptGM@... to NK_FUNCS and run make nk-data).",
-                file=sys.stderr,
+            raise SystemExit(
+                f"No optGeo nk TSVs under {args.dir}. Run e.g. "
+                "`make nk-data` with OptGeo in NK_FUNCS."
             )
-            return
     else:
         rs_list = [float(x.strip()) for x in rs_arg.split(",") if x.strip()]
         if not rs_list:
             raise SystemExit("Provide at least one --rs value.")
 
     fig, ax = plt.subplots(figsize=(7.0, 4.5))
-    _c_gm, ls_gm, mk_gm = SUBSET_STYLE["optGM"]
+    _c_opt, ls_opt, mk_opt = SUBSET_STYLE["optGeo"]
     n = len(rs_list)
     cmap = plt.get_cmap("viridis")
     colors = [cmap(0.12 + 0.78 * (i / max(n - 1, 1))) for i in range(n)]
@@ -89,7 +77,7 @@ def main() -> None:
         d = None
         for p in files:
             di = nk.load_nk_tsv(p)
-            if not _is_optgm_nk_functional(di.get("functional") or ""):
+            if pretty_functional_name(di["functional"]) != "optGeo":
                 continue
             if di.get("nk_converged") is False:
                 continue
@@ -97,7 +85,7 @@ def main() -> None:
             break
         if d is None:
             print(
-                f"Warning: no optGM nk TSV for r_s≈{rs_want} under {args.dir}",
+                f"Warning: no optGeo nk TSV for r_s≈{rs_want} under {args.dir}",
                 file=sys.stderr,
             )
             continue
@@ -107,9 +95,9 @@ def main() -> None:
         ax.plot(
             x,
             d["n"],
-            ls_gm,
+            ls_opt,
             color=colors[i],
-            marker=mk_gm,
+            marker=mk_opt,
             markevery=max(1, len(x) // 25),
             markersize=3.5,
             linewidth=1.35,
@@ -127,7 +115,7 @@ def main() -> None:
     ax.axhline(1.0, color="0.75", linewidth=0.8, linestyle="--")
     ax.axhline(0.0, color="0.75", linewidth=0.8, linestyle="--")
     ax.grid(True, alpha=0.25)
-    ax.legend(loc="upper right", fontsize=9, framealpha=0.92, title="optGM")
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.92, title="optGeo")
     fig.tight_layout()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=160)

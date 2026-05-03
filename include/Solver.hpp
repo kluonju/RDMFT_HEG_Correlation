@@ -134,14 +134,6 @@ inline double invert_h2_prime_for_cga(double s) {
     return std::clamp(1.0 - s / std::sqrt(1.0 + s * s), 0.0, 1.0);
 }
 
-// CHF hole h(n) = sqrt(n(1-n)); solve h'(n) = s with
-// h'(n) = (1 - 2n) / (2 sqrt(n(1-n))).  With u := 1 - 2n,
-// u^2 (1 + s^2) = s^2  =>  n = 0.5 (1 - s / sqrt(1 + s^2)).
-inline double invert_dh_cha(double s) {
-    const double u = s / std::sqrt(1.0 + s * s);
-    return std::clamp(0.5 * (1.0 - u), 0.0, 1.0);
-}
-
 // Solve  beta * (n(1-n))^(beta-1) * (1 - 2 n) = s   for n in [0, 1].
 // Equivalent (with u = 1 - 2n,  x = n(1-n) = (1 - u^2)/4) to
 //
@@ -265,8 +257,63 @@ update_occupations_geo(double mu,
     return n;
 }
 
+// OptGM: K = c1 n_i n_j + c2 n_i^alpha n_j^alpha with c1 = 1-lambda, c2 = lambda.
+// EL per orbital: c1 f1'(n) U1 + c2 f2'(n) U2 = pi k (k^2/2 - mu), f1=n, f2=n^alpha.
+// For 0 < alpha < 1 and U1, U2 >= 0 the LHS is strictly decreasing in n on (0,1).
+inline std::vector<double>
+update_occupations_hf_power_mix(double mu,
+                                const std::vector<double>& U1,
+                                const std::vector<double>& U2,
+                                const Grid& g,
+                                double c1,
+                                double c2,
+                                double alpha) {
+    constexpr double pi = M_PI;
+    const std::size_t N = g.n();
+    const double tiny = 1.0e-14;
+    std::vector<double> n(N, 0.0);
+
+    for (std::size_t i = 0; i < N; ++i) {
+        const double k = g.k[i];
+        if (k <= 0.0) { n[i] = 1.0; continue; }
+        const double R = pi * k * (0.5 * k * k - mu);
+
+        const double u1 = U1[i];
+        const double u2 = U2[i];
+        const double sumU = std::abs(c1 * u1) + std::abs(c2 * u2);
+        if (sumU < tiny) {
+            n[i] = (R >= 0.0) ? 0.0 : 1.0;
+            continue;
+        }
+
+        auto lhs = [&](double nn) {
+            const double nc = std::clamp(nn, 1.0e-14, 1.0);
+            const double t1 = c1 * u1;
+            const double t2 =
+                (c2 > 0.0 && alpha > 0.0) ? c2 * alpha * std::pow(nc, alpha - 1.0) * u2 : 0.0;
+            return t1 + t2;
+        };
+
+        const double eps = 1.0e-12;
+        const double lo_n = eps;
+        const double hi_n = 1.0;
+        const double L_lo = lhs(lo_n);
+        const double L_hi = lhs(hi_n);
+        if (R >= L_lo) { n[i] = 0.0; continue; }
+        if (R <= L_hi) { n[i] = 1.0; continue; }
+        double a = lo_n, b = hi_n;
+        for (int it = 0; it < 80; ++it) {
+            const double m = 0.5 * (a + b);
+            if (lhs(m) > R) a = m; else b = m;
+            if (b - a < 1.0e-12) break;
+        }
+        n[i] = std::clamp(0.5 * (a + b), 0.0, 1.0);
+    }
+    return n;
+}
+
 // Same EL structure as `update_occupations_geo` but with tunable channel
-// weights (c1, c2, c3) matching OptGMFunctional / generalized GEO sums.
+// weights (c1, c2, c3) matching OptGeoFunctional / generalized GEO sums.
 inline std::vector<double>
 update_occupations_optGM(double mu,
                          const std::vector<double>& U1,
@@ -395,7 +442,7 @@ inline std::vector<double> compute_U_with(const std::vector<double>& nv,
 }
 
 // Smeared initial guess: a sigmoid centred at the Fermi wave vector, which
-// helps Beta, CGA / CHF, GEO, and optGM escape a trivial HF-step-like fixed
+// helps Beta, CGA / CHF, GEO, optGeo, and optGM (HF/Power mix, PGD) escape a trivial HF-step-like fixed
 // point.  width controls the fractional smearing relative to k_F.
 inline std::vector<double>
 initial_smeared(double rs, const Grid& g, double width = 0.10) {
@@ -411,7 +458,7 @@ initial_smeared(double rs, const Grid& g, double width = 0.10) {
 
 // Self-consistent solve for any Functional.  Power-family functionals use the
 // closed-form occupation update; CGA, CHF, and Beta use the additive branch
-// with a dedicated 1-D inverter; BBC1, BBC3, and GEO / optGM use projected
+// with a dedicated 1-D inverter; BBC1, BBC3, GEO / optGeo, and optGM use projected
 // gradient.  All branches bisect on mu for particle conservation.
 //
 // Beta, CGA, and CHF can show a competing HF-like minimum; we therefore try
@@ -435,19 +482,18 @@ solve_rdmft(double rs,
     const bool factorized = (pf != nullptr) || (hf != nullptr)
                           || (mu_f != nullptr) || (gu_f != nullptr);
 
-    // Additive kernel: CHF/Beta use K = n_i n_j + g_i g_j; CGA uses
-    // K = (1/2) [ n_i n_j + g_i g_j ] (see ``CGAFunctional::kernel``).
+    // Additive kernel: CHF inherits ``BetaFunctional(1/2)``; Beta is general
+    // exponent; CGA uses K = (1/2) [ n_i n_j + g_i g_j ] (``CGAFunctional``).
     const CGAFunctional*   cga   = dynamic_cast<const CGAFunctional*>(&F);
-    const CHFFunctional*   cha   = dynamic_cast<const CHFFunctional*>(&F);
     const BetaFunctional*  beta_f = dynamic_cast<const BetaFunctional*>(&F);
-    const bool additive =
-        (cga != nullptr) || (cha != nullptr) || (beta_f != nullptr);
+    const bool additive = (cga != nullptr) || (beta_f != nullptr);
 
     // GEO uses a non-factorizable multi-power kernel; it is solved via the
     // generic projected-gradient branch below (no special-case here).
-    const GEOFunctional*   geo   = dynamic_cast<const GEOFunctional*>(&F);
+    const GEOFunctional*    geo       = dynamic_cast<const GEOFunctional*>(&F);
+    const OptGeoFunctional* optgeo    = dynamic_cast<const OptGeoFunctional*>(&F);
     const OptGMFunctional* optgm = dynamic_cast<const OptGMFunctional*>(&F);
-    const BBC3Functional*  bbc3  = dynamic_cast<const BBC3Functional*>(&F);
+    const BBC3Functional*   bbc3      = dynamic_cast<const BBC3Functional*>(&F);
 
     double alpha = 1.0;
     if (pf)        alpha = pf->alpha();
@@ -465,10 +511,11 @@ solve_rdmft(double rs,
     // the endpoints, so we deliberately seed a broad range of fractionally-
     // occupied initial conditions.  For factorized and generic functionals
     // one start (sharp step) is enough.
-    // Smeared multi-start helps additive CGA / CHF / Beta and GEO / optGM /
-    // BBC3 escape the trivial HF-step fixed point.
+    // Smeared multi-start helps additive CGA / CHF / Beta and GEO / optGeo /
+    // optGM / BBC3 escape the trivial HF-step fixed point.
     const bool needs_multistart = additive || (geo != nullptr)
-                                  || (optgm != nullptr) || (bbc3 != nullptr);
+                                  || (optgeo != nullptr) || (optgm != nullptr)
+                                  || (bbc3 != nullptr);
     const std::vector<std::pair<bool, double>> starts = needs_multistart
         ? std::vector<std::pair<bool, double>>{
               {false, 0.05}, {false, 0.10}, {false, 0.20},
@@ -523,7 +570,6 @@ solve_rdmft(double rs,
     // Pick the appropriate hole inverter for additive kernels.
     auto invert_dg = [&](double s) -> double {
         if (cga)    return invert_h2_prime_for_cga(s);
-        if (cha)    return invert_dh_cha(s);
         if (beta_f) return invert_dgbeta(s, beta_f->beta());
         return 0.5;
     };
@@ -537,8 +583,33 @@ solve_rdmft(double rs,
             auto U = compute_U(n);
             mu = bisect_mu_factorized(U);
             n_target = update_occupations_power(alpha, mu, U, g);
-        } else if (geo || optgm) {
-            // Multi-power GEO / optGM kernel: build U1, U2, U3 with f1(n) = n,
+        } else if (optgm) {
+            const double lam = optgm->lambda_mix();
+            const double al = optgm->alpha();
+            auto f_pow = [al](double nn) {
+                const double eps = 1.0e-14;
+                const double x = (nn > 0.0) ? nn : 0.0;
+                const double xc = (x > eps) ? x : eps;
+                return std::pow(xc, al);
+            };
+            auto U1 = compute_U_with(n, g, W, identity_id);
+            auto U2 = compute_U_with(n, g, W, f_pow);
+            const double c1 = 1.0 - lam;
+            const double c2 = lam;
+            auto bisect_mu_optgm = [&]() {
+                double lo = opt.mu_lo, hi = opt.mu_hi;
+                for (int b = 0; b < opt.bisect_iter; ++b) {
+                    const double m = 0.5 * (lo + hi);
+                    auto n_try = update_occupations_hf_power_mix(m, U1, U2, g, c1, c2, al);
+                    if (density_of(n_try) > rho_target) hi = m;
+                    else                                 lo = m;
+                }
+                return 0.5 * (lo + hi);
+            };
+            mu = bisect_mu_optgm();
+            n_target = update_occupations_hf_power_mix(mu, U1, U2, g, c1, c2, al);
+        } else if (geo || optgeo) {
+            // Multi-power GEO / optGeo kernel: build U1, U2, U3 with f1(n) = n,
             // f2(n) = sqrt(n), f3(n) = n^{3/4}, then solve the EL equation
             // pointwise via 1-D bisection.
             auto f1 = [](double nn) { return nn; };
@@ -548,9 +619,9 @@ solve_rdmft(double rs,
             auto U2 = compute_U_with(n, g, W, f2);
             auto U3 = compute_U_with(n, g, W, f3);
 
-            const double c1 = geo ? 0.25 : optgm->w1();
-            const double c2 = geo ? 0.25 : optgm->w2();
-            const double c3 = geo ? 0.50 : optgm->w3();
+            const double c1 = geo ? 0.25 : optgeo->w1();
+            const double c2 = geo ? 0.25 : optgeo->w2();
+            const double c3 = geo ? 0.50 : optgeo->w3();
 
             auto bisect_mu_geo_family = [&]() {
                 double lo = opt.mu_lo, hi = opt.mu_hi;
@@ -582,9 +653,6 @@ solve_rdmft(double rs,
                 const double nc = std::clamp(n_, n_floor, 1.0 - n_floor);
                 if (cga) {
                     return std::sqrt(std::max(nc * (2.0 - nc), 0.0));
-                }
-                if (cha) {
-                    return std::sqrt(nc * (1.0 - nc));
                 }
                 if (beta_f) {
                     return std::pow(nc * (1.0 - nc), beta_f->beta());

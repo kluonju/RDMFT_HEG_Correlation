@@ -1,0 +1,63 @@
+
+=== OptGM (lambda, alpha) vs PW92 — RMSE(E_c) ===
+  executable: /home/kluo/Documents/repo/RDMFT_HEG_Correlation/build/rdmft_heg
+  box: lambda in [0.0, 1.0], alpha in [0.35, 0.72]
+  main grid:  N=401  kmax=3.0
+  main r_s:   [0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0]
+  work dir:   /home/kluo/Documents/repo/RDMFT_HEG_Correlation/build/optgm_la_z3ny8vw5
+
+--- prescreen: (lambda, alpha) probes ---
+  N=101  kmax=2.0  r_s=[0.2, 1.0, 5.0, 10.0]
+  [ 1] mid (0.5, 0.55)                           RMSE=4.40470e-02  (10.3s)  lam,a=(0.500,0.550)
+  [ 2] more HF (0.25, 0.56)                      RMSE=5.81379e-02  (7.8s)  lam,a=(0.250,0.560)
+  [ 3] more Power (0.65, 0.54)                   RMSE=2.99876e-02  (9.1s)  lam,a=(0.650,0.540)
+  [ 4] high alpha (0.45, 0.62)                   RMSE=5.47165e-02  (8.0s)  lam,a=(0.450,0.620)
+  [ 5] low alpha (0.5, 0.48)                     RMSE=2.61792e-02  (9.3s)  lam,a=(0.500,0.480)
+  [ 6] edge HF (0.05, 0.57)                      RMSE=6.37114e-02  (6.2s)  lam,a=(0.050,0.570)
+  [ 7] edge Pow (0.92, 0.53)                     RMSE=3.38715e-03  (10.0s)  lam,a=(0.920,0.530)
+
+  prescreen best: edge Pow (0.92, 0.53)
+  -> start lam=0.9200  alpha=0.5300  (coarse RMSE=3.38715e-03)
+
+--- main optimization ---
+  SciPy: method=Nelder-Mead
+  [main] eval #1  lam=0.92000 alpha=0.53000  RMSE=6.33104e-03  (126.1s)
+  [main] eval #2  lam=0.96600 alpha=0.53000  RMSE=1.17623e-02  (128.3s)
+  [main] eval #3  lam=0.92000 alpha=0.55650  RMSE=9.52600e-03  (117.1s)
+  [main] eval #4  lam=0.87400 alpha=0.55650  RMSE=1.36736e-02  (114.5s)
+  [main] eval #5  lam=0.94300 alpha=0.53663  RMSE=5.27035e-03  (125.6s)
+  [main] eval #6  lam=0.94300 alpha=0.51013  RMSE=2.33081e-02  (131.9s)
+  [main] eval #7  lam=0.92575 alpha=0.54491  RMSE=4.20423e-03  (121.1s)
+  [main] eval #8  lam=0.94875 alpha=0.55153  RMSE=4.88113e-03  (120.5s)
+  [main] eval #9  lam=0.93150 alpha=0.55981  RMSE=9.92279e-03  (116.4s)
+  [main] eval #10  lam=0.94013 alpha=0.54242  RMSE=3.31816e-03  (123.8s)
+  [main] eval #11  lam=0.91713 alpha=0.53580  RMSE=3.67584e-03  (122.2s)
+  [main] eval #12  lam=0.93150 alpha=0.53331  RMSE=5.79072e-03  (124.2s)
+  [main] eval #13  lam=0.92719 alpha=0.54201  RMSE=3.42707e-03  (124.9s)
+  [main] eval #14  lam=0.95019 alpha=0.54863  RMSE=3.80420e-03  (127.9s)
+  [main] eval #15  lam=0.92539 alpha=0.53901  RMSE=3.38768e-03  (124.1s)
+
+=== optimization finished ===
+  message: Optimization terminated successfully.
+  success=True  rdmft_evals=15  main-phase=15
+  final RMSE: 3.31816e-03
+  refined lambda=0.94012500  alpha=0.54242188
+
+  Recommended: OptGM@0.940125;0.542422
+  rdmft_heg: --funcs 'OptGM@0.940125;0.542422'
+
+--- final validation -> /home/kluo/Documents/repo/RDMFT_HEG_Correlation/build/optgm_best ---
+  rs= 0.2  Ec=-0.09828919  PW92=-0.10112257  diff= 2.83338074e-03
+  rs= 0.3  Ec=-0.08739781  PW92=-0.09001162  diff= 2.61380796e-03
+  rs= 0.5  Ec=-0.07457962  PW92=-0.07661874  diff= 2.03911686e-03
+  rs=   1  Ec=-0.05896236  PW92=-0.05977369  diff= 8.11325654e-04
+  rs=   2  Ec=-0.04567157  PW92=-0.04475950  diff=-9.12074142e-04
+  rs=   3  Ec=-0.03905234  PW92=-0.03694122  diff=-2.11112740e-03
+  rs=   4  Ec=-0.03487113  PW92=-0.03186634  diff=-3.00479493e-03
+  rs=   5  Ec=-0.03191009  PW92=-0.02821623  diff=-3.69385495e-03
+  rs=   6  Ec=-0.02966282  PW92=-0.02542712  diff=-4.23569302e-03
+  rs=   8  Ec=-0.02640317  PW92=-0.02139068  diff=-5.01249085e-03
+  rs=  10  Ec=-0.02408651  PW92=-0.01857229  diff=-5.51422370e-03
+  RMSE after rounding: 3.31815e-03
+
+Removed temp dir /home/kluo/Documents/repo/RDMFT_HEG_Correlation/build/optgm_la_z3ny8vw5

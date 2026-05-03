@@ -14,7 +14,10 @@ Example::
 
 Only functionals listed in ``plot_common.WANTED_SERIES`` are drawn (same as
 the correlation-energy figure, including CGA and CHF). The x-axis is fixed to
-``0 <= k/k_F <= 3``.
+``0 <= k/k_F <= 3``.  Driver exports use ``--N 401 --kmax 3`` (401 odd points,
+``k_max = 3 k_F``) on a uniform k grid (composite trapezoid).
+nk TSVs that declare ``# converged: 0`` are excluded; legacy exports without
+that line are still plotted.
 """
 from __future__ import annotations
 
@@ -47,9 +50,14 @@ def _fmt_rs_label(rs: float) -> str:
 
 
 def load_nk_tsv(path: Path) -> dict:
-    """Return dict rs, kF, k_max, functional, k, n."""
+    """Return dict rs, kF, k_max, functional, k, n, nk_converged.
+
+    ``nk_converged`` is True/False from ``# converged:`` in the header, or
+    None if absent (legacy nk files: treated as usable).
+    """
     rs = kf = k_max = None
     functional = ""
+    nk_converged: bool | None = None
     k_list: list[float] = []
     n_list: list[float] = []
     with path.open() as f:
@@ -69,6 +77,12 @@ def load_nk_tsv(path: Path) -> dict:
                     k_max = float(m.group(1))
             elif line.startswith("# functional:"):
                 functional = line.split(":", 1)[1].strip()
+            elif line.startswith("# converged:"):
+                v = line.split(":", 1)[1].strip()
+                try:
+                    nk_converged = int(float(v)) == 1
+                except ValueError:
+                    nk_converged = None
             elif line.startswith("#"):
                 continue
             else:
@@ -82,6 +96,7 @@ def load_nk_tsv(path: Path) -> dict:
         "kF": kf,
         "k_max": k_max,
         "functional": functional,
+        "nk_converged": nk_converged,
         "k": np.array(k_list, dtype=float),
         "n": np.array(n_list, dtype=float),
     }
@@ -99,10 +114,11 @@ def discover_files(nk_dir: Path, rs_want: float, rs_tol: float) -> list[Path]:
     return out
 
 
-def peek_nk_meta(path: Path) -> tuple[float | None, str]:
+def peek_nk_meta(path: Path) -> tuple[float | None, str, bool | None]:
     """Read only headers (no full k,n scan) for discovery."""
     rs_val = None
     functional = ""
+    nk_converged: bool | None = None
     with path.open() as f:
         for line in f:
             line = line.strip()
@@ -114,19 +130,27 @@ def peek_nk_meta(path: Path) -> tuple[float | None, str]:
                     rs_val = float(m.group(1))
             elif line.startswith("# functional:"):
                 functional = line.split(":", 1)[1].strip()
+            elif line.startswith("# converged:"):
+                v = line.split(":", 1)[1].strip()
+                try:
+                    nk_converged = int(float(v)) == 1
+                except ValueError:
+                    nk_converged = None
             elif line.startswith("#"):
                 continue
             else:
                 break
-    return rs_val, functional
+    return rs_val, functional, nk_converged
 
 
 def discover_rs_auto(nk_dir: Path) -> list[float]:
     """Sorted r_s values that have at least one nk TSV for a plotted functional."""
     seen: set[float] = set()
     for p in sorted(nk_dir.glob("*_rs*.tsv")):
-        rs_h, fn = peek_nk_meta(p)
+        rs_h, fn, conv = peek_nk_meta(p)
         if rs_h is None:
+            continue
+        if conv is False:
             continue
         if pretty_functional_name(fn) not in WANTED_SET:
             continue
@@ -206,6 +230,8 @@ def main() -> None:
             if d["kF"] is None or d["k"].size == 0:
                 print(f"Warning: skip empty or bad {p}", file=sys.stderr)
                 continue
+            if d.get("nk_converged") is False:
+                continue
             key = pretty_functional_name(d["functional"])
             if key not in WANTED_SET:
                 continue
@@ -236,7 +262,7 @@ def main() -> None:
                 color=c,
                 marker=mk,
                 markevery=max(1, len(x) // 20),
-                markersize=4,
+                markersize=5 if key == "optGM" else 4,
                 linewidth=1.4,
                 label=key,
             )
@@ -250,22 +276,9 @@ def main() -> None:
         ax_row.grid(True, alpha=0.25)
         ax_row.legend(loc="upper right", fontsize=8, framealpha=0.92)
 
+        # r_s as subplot title (above axes) so it never sits on top of n(k) curves.
         rs_lbl = _fmt_rs_label(rs_want)
-        ax_row.text(
-            0.02,
-            0.98,
-            rf"$r_s = {rs_lbl}$",
-            transform=ax_row.transAxes,
-            fontsize=10,
-            va="top",
-            ha="left",
-            bbox={
-                "boxstyle": "round,pad=0.28",
-                "facecolor": "white",
-                "edgecolor": "0.72",
-                "alpha": 0.92,
-            },
-        )
+        ax_row.set_title(rf"$r_s = {rs_lbl}$", fontsize=10, loc="left", pad=7)
 
     fig.tight_layout()
     args.out.parent.mkdir(parents=True, exist_ok=True)

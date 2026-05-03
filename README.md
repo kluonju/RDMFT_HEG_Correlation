@@ -77,16 +77,25 @@ E_xc/V = -(1 / (2π³)) ∬₀^∞ k k' K(n(k), n(k'))
   是单调递减函数（前提是 `U_alpha,i >= 0`），因此可对每个网格点用
   一维二分把 `n_i` 反解出来；外层照常用 `mu` 二分满足密度约束。
 
-* **optGM**（optimized geometric mean）：与 GEO 相同的三条通道
+* **optGeo**（optimized geometric-channel）：与 GEO 相同的三条通道
   `n_i n_j`、`(n_i n_j)^{1/2}`、`(n_i n_j)^{3/4}`，但混合权重为
   `w1=a^2`、`w2=b^2`、`w3=c^2`，其中 `(a,b,c)` 在单位球面上（程序会对输入
   做归一化，使 `a^2+b^2+c^2=1`，从而 `K(1,1)=1`）。CLI 使用分号分隔角度
-  （因为 `--funcs` 列表本身用逗号分隔），例如
-  例如权重 `w1,w2,w3 = 0.00675,0.64213,0.35112` 时取
-  `OptGM@-0.0821547206643049;0.8013311419635793;0.5925545538598386`
-  （即 `(-√w1,√w2,√w3)`，和为 1 时已在单位球上）。可用 `python3 scripts/optimize_optGM.py` 在 PW92
-  参考下拟合 `(a,b,c)`（默认先做少量粗网格 prescreen 再松收敛；`--quiet` 减少输出，
-  `--verbose` 打印 C++ 标准输出；仅需 NumPy，可选 SciPy）。
+  （因为 `--funcs` 列表本身用逗号分隔），例如权重 `w1,w2,w3 = 0.00675,0.64213,0.35112` 时取
+  `OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545538598386`
+  （即 `(-√w1,√w2,√w3)`，和为 1 时已在单位球上）。三角度**仅**通过 **`OptGeo@`** 传入。
+  可用 `python3 scripts/optimize_optGeo.py` 在 PW92 参考下拟合 `(a,b,c)`（脚本会输出
+  `OptGeo@...`，并在 `build/optgeo_best/` 写入校验 TSV；默认先做少量粗网格
+  prescreen 再松收敛；`--quiet` 减少输出，`--verbose` 打印 C++ 标准输出；仅需
+  NumPy，可选 SciPy）。
+
+* **OptGM**（HF 与 **Power(α)** 的凸组合）：两体核
+  `K = (1−λ) n_i n_j + λ n_i^α n_j^α`，即 **(1−λ)·HF + λ·Power(α)**（与单独选
+  ``HF`` / ``Power@α`` 时同一 JK 约定）。  `λ` 在程序内钳制到 `[0,1]`；`α` 取于 `(0, 1)`（若 `α ≥ 1` 会略压到 `1−10⁻⁶`，
+  以保证与 GEO 类同的 **两通道 1D 二分** 占据更新单调）。**不可因子化成单一**
+  `f(n_i)f(n_j)`。CLI：**`OptGM@lambda;alpha`**（**一个**分号、两个浮点；
+  bash 请加引号）。`python3 scripts/optimize_optGM.py`（SciPy）在 **PW92/QMC**
+  参考 `Ec` 下拟合 `(λ, α)`，输出推荐键值并写入 `build/optgm_best/`。
 
 * **Beta**：将 ``sqrt(n(1-n))`` 空穴通道推广为可调指数
 
@@ -168,7 +177,9 @@ QMC 参考由 PW92 拟合（`include/QMC.hpp`）给出。
 ├── scripts/plot_common.py   # 关联能 / n(k) 图共用曲线列表与样式
 ├── scripts/plot_results.py  # 读取 data/*.tsv 画关联能（固定几条泛函 + PW92）
 ├── scripts/plot_nk.py       # 读取 data/nk/*.tsv 画 n(k)（同上泛函，多 r_s）
-├── scripts/plot_nk_optgm.py # 仅 optGM：不同 r_s 的 n(k) 叠在同一张图
+├── scripts/plot_nk_optgeo.py # 仅 optGeo：不同 r_s 的 n(k) 叠在同一张图
+├── scripts/optimize_optGeo.py # 拟合 optGeo 三角度 vs PW92
+├── scripts/optimize_optGM.py  # 拟合 OptGM@lambda;alpha vs PW92（需 SciPy）
 ├── data/                    # 每个泛函一个 .tsv 文件（HF.tsv / GEO.tsv / ...）
 ├── figures/                 # 生成的对比图
 ├── Makefile                 # 简单 make 构建
@@ -191,15 +202,16 @@ make test       # 运行单元测试
 make run        # 增量扫描：只处理 Makefile 里 FUNCS 列出的泛函（缺 TSV 才算）
 make rerun      # 对同一批 FUNCS 强制重算（--force）
 make geo        # 仅重算 GEO -> data/GEO.tsv
-make plot       # correlation_energy.png、nk.png、nk_optgm.png（需 data/ 与 make nk-data）
+make optgeo     # 仅重算 Makefile 中配置的 OptGeo@... -> data/*.tsv
+make plot       # correlation_energy.png、nk.png、nk_optgeo.png（需 data/ 与 make nk-data）
 make clean-data # 删除所有 data/*.tsv；下一次 make run 会按 FUNCS 重新生成
 ```
 
 性能说明（相对旧实现）：预计算交换矩阵 `W` 的同时生成转置 `W^T`，使
 `∂E_xc/∂n_i` 中按列访问 `W` 时内存连续；因子化泛函（HF / Müller / Power / GU）
 的 `V_inner` 与 `deps_xc` 用一次矩阵–向量乘积代替 `N²` 次 `kernel()` 调用；所有
-`O(N²)` 外层循环默认用 **OpenMP** 并行（`make USE_OPENMP=0` 可关）。GEO / optGM /
-CGA / CHF / Beta 等非因子化核仍保持原物理公式，仅受益于连续访问与并行。
+`O(N²)` 外层循环默认用 **OpenMP** 并行（`make USE_OPENMP=0` 可关）。GEO / optGeo /
+OptGM / CGA / CHF / Beta 等非因子化核仍保持原物理公式，仅受益于连续访问与并行。
 
 每个泛函的结果单独写到 `data/<name>.tsv`（例如 `data/HF.tsv`、
 `data/GEO.tsv`、`data/Power_0.55.tsv`）。这样新增/修改一个泛函时只需
@@ -226,7 +238,7 @@ ctest --test-dir build --output-on-failure
 ```
 rdmft_heg [选项]
   --rs   <列表>       逗号分隔的 r_s 值，如 0.5,1,2,5
-  --funcs <列表>      **必填**，逗号分隔泛函，如 HF,Mueller,Power@0.55,OptGM@a;b;c（分号分隔）
+  --funcs <列表>      **必填**，逗号分隔泛函，如 HF,Mueller,Power@0.55,OptGeo@a;b;c、`OptGM@lambda;alpha`（含 `;` 时请整段加引号）
   --N    <整数>       k 方向网格点数（奇数，默认 401）
   --kmax <浮点>       k_max 取 (factor × k_F(r_s))，默认 3
   --out-dir <目录>    每个泛函一个 .tsv 文件的输出目录，默认 data

@@ -167,49 +167,6 @@ private:
     }
 };
 
-// CHF — “corrected Hartree–Fock”-type kernel [G. Csányi, T. A. Arias,
-// Phys. Rev. B 61, 7348 (2000)], historically also labeled CHF in some notes.
-// In this driver’s JK convention (same as ``CGAFunctional`` up to the hole):
-//
-//     K_CHF(n_i, n_j) = n_i n_j + sqrt(n_i(1-n_i)) * sqrt(n_j(1-n_j)).
-//
-// The CLI accepts ``CHF`` as an alias for ``CHF`` (``make_functional``).
-class CHFFunctional : public Functional {
-public:
-    std::string name() const override { return "CHF"; }
-    double f(double n) const override {
-        return n > 0.0 ? std::sqrt(n) : 0.0;
-    }
-    double df(double n) const override {
-        const double eps = 1.0e-14;
-        return 0.5 / std::sqrt(n > eps ? n : eps);
-    }
-    double kernel(double ni, double nj) const override {
-        const double hi = hole(ni);
-        const double hj = hole(nj);
-        return ni * nj + hi * hj;
-    }
-    double kernel_grad(double ni, double nj) const override {
-        const double hj = hole(nj);
-        return nj + dhole(ni) * hj;
-    }
-
-private:
-    static double hole(double n) {
-        if (n <= 0.0 || n >= 1.0) return 0.0;
-        return std::sqrt(n * (1.0 - n));
-    }
-    static double dhole(double n) {
-        const double eps = 1.0e-12;
-        const double x = n * (1.0 - n);
-        if (x <= eps) {
-            const double xc = eps;
-            return (1.0 - 2.0 * n) / (2.0 * std::sqrt(xc));
-        }
-        return (1.0 - 2.0 * n) / (2.0 * std::sqrt(x));
-    }
-};
-
 // Beta functional (this work).  Generalizes the CGA hole piece via an
 // adjustable exponent beta:
 //
@@ -217,7 +174,7 @@ private:
 //
 // Special / limiting cases:
 //
-//   * beta = 1/2  -> same bracket as ``CHFFunctional`` (sqrt(n(1-n)) hole).
+//   * beta = 1/2  -> same bracket as the CHF kernel (sqrt(n(1-n)) hole).
 //   * beta -> +infinity  -> the bracket vanishes (since 0 <= n(1-n) <= 1/4)
 //                         and we recover Hartree-Fock.
 //   * beta -> 0          -> the hole saturates at 1 for any fractional
@@ -278,6 +235,19 @@ private:
     }
 };
 
+// CHF — corrected-HF kernel [G. Csányi, T. A. Arias, Phys. Rev. B 61, 7348 (2000)].
+//
+//     K_CHF(n_i, n_j) = n_i n_j + [ n_i (1 - n_i) * n_j (1 - n_j) ]^{1/2},
+//
+// i.e. algebraically ``Beta(beta = 1/2)``.  We inherit that implementation so
+// the additive SCF path matches the stable Beta solver (a standalone CHF
+// additive branch incorrectly reproduced the CGA momentum distribution).
+class CHFFunctional : public BetaFunctional {
+public:
+    CHFFunctional() : BetaFunctional(0.5) {}
+    std::string name() const override { return "CHF"; }
+};
+
 // GEO functional (this work).  Multi-power "geometric-mean" kernel built as
 // the equally-normalized sum
 //
@@ -333,19 +303,19 @@ public:
     }
 };
 
-// optGM (optimized geometric mean).  Same three factorized channels as GEO
-// (f1 = n, f2 = sqrt(n), f3 = n^{3/4}) but with tunable nonnegative weights
+// optGeo (optimized geometric mean on the GEO-style channels).  Same three
+// factorized channels as GEO (f1 = n, f2 = sqrt(n), f3 = n^{3/4}) but with
+// tunable nonnegative weights
 //
-//     K_optGM(n_i, n_j) = w1 n_i n_j + w2 (n_i n_j)^{1/2} + w3 (n_i n_j)^{3/4},
+//     K_optGeo(n_i, n_j) = w1 n_i n_j + w2 (n_i n_j)^{1/2} + w3 (n_i n_j)^{3/4},
 //
 // where w1 = alpha^2, w2 = beta^2, w3 = gamma^2 and alpha^2 + beta^2 + gamma^2 = 1,
 // so K(1, 1) = 1 (HF saturation).  GEO in this codebase corresponds to
 // (w1, w2, w3) = (1/4, 1/2, 1/4).
-// To realize nonnegative weights (w1,w2,w3) that sum to 1, pass direction
-// (±sqrt(w1), ±sqrt(w2), ±sqrt(w3)); normalization leaves w_i unchanged.
-class OptGMFunctional : public Functional {
+// CLI: ``OptGeo@a;b;c`` (three angles on the unit sphere; normalized in ctor).
+class OptGeoFunctional : public Functional {
 public:
-    explicit OptGMFunctional(double alpha, double beta, double gamma) {
+    explicit OptGeoFunctional(double alpha, double beta, double gamma) {
         const double sq = alpha * alpha + beta * beta + gamma * gamma;
         const double nrm = std::sqrt(sq);
         if (nrm < 1.0e-15) {
@@ -371,7 +341,7 @@ public:
     std::string name() const override {
         char buf[96];
         std::snprintf(buf, sizeof(buf),
-                      "optGM(a=%.4f,b=%.4f,c=%.4f)", alpha_, beta_, gamma_);
+                      "optGeo(a=%.4f,b=%.4f,c=%.4f)", alpha_, beta_, gamma_);
         return std::string(buf);
     }
     double f(double n) const override {
@@ -403,6 +373,75 @@ private:
     double beta_;
     double gamma_;
     double w1_, w2_, w3_;
+};
+
+// optGM: convex mixture of the HF pair kernel and the Power pair kernel
+//
+//     K(n_i, n_j) = (1 - lambda) * n_i n_j
+//                 + lambda * n_i^alpha * n_j^alpha,
+//
+// i.e. ``(1-lambda) * HF + lambda * Power(alpha)`` in the same JK convention as
+// ``HFFunctional`` / ``PowerFunctional``.  ``lambda`` is clamped to ``[0, 1]``;
+// ``alpha`` must be positive (also capped in the ctor for numerical safety).
+//
+// CLI: ``OptGM@lambda;alpha`` (one semicolon, two floats).  Solved via the generic
+// projected-gradient branch in ``solve_rdmft`` (symmetric non-factorizable kernel).
+class OptGMFunctional : public Functional {
+public:
+    explicit OptGMFunctional(double lambda, double alpha) {
+        if (lambda < 0.0)       lambda_ = 0.0;
+        else if (lambda > 1.0) lambda_ = 1.0;
+        else                   lambda_ = lambda;
+        const double eps = 1.0e-14;
+        // α < 1 keeps f'(n) ∝ n^{α-1} decreasing in n so the 2-channel EL
+        // bisection in ``solve_rdmft`` is monotone (same regime as Power fits).
+        if (alpha <= eps)         alpha_ = eps;
+        else if (alpha >= 1.0)    alpha_ = 1.0 - 1.0e-6;
+        else                      alpha_ = alpha;
+    }
+
+    double lambda_mix() const { return lambda_; }
+    double alpha() const { return alpha_; }
+
+    std::string name() const override {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "optGM(lam=%.4g,alpha=%.4g)", lambda_, alpha_);
+        return std::string(buf);
+    }
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+    double kernel(double ni, double nj) const override {
+        const double lam = lambda_;
+        const double hf = ni * nj;
+        const double eps = 1.0e-15;
+        const double nic = (ni > 0.0) ? ni : 0.0;
+        const double njc = (nj > 0.0) ? nj : 0.0;
+        const double nicc = (nic > eps) ? nic : eps;
+        const double njcc = (njc > eps) ? njc : eps;
+        const double pw =
+            std::pow(nicc, alpha_) * std::pow(njcc, alpha_);
+        return (1.0 - lam) * hf + lam * pw;
+    }
+    double kernel_grad(double ni, double nj) const override {
+        const double lam = lambda_;
+        const double eps = 1.0e-15;
+        const double njc = (nj > 0.0) ? nj : 0.0;
+        const double njcc = (njc > eps) ? njc : eps;
+        const double nic = (ni > 0.0) ? ni : 0.0;
+        const double nicc = (nic > eps) ? nic : eps;
+        const double d_pw =
+            alpha_ * std::pow(nicc, alpha_ - 1.0) * std::pow(njcc, alpha_);
+        return (1.0 - lam) * njc + lam * d_pw;
+    }
+
+private:
+    double lambda_;
+    double alpha_;
 };
 
 // BBC1 (Gritsenko, Pernal, Baerends 2005).  In a plane-wave basis it reduces
@@ -536,14 +575,21 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     if (key == "BBC1")    return std::make_unique<BBC1Functional>();
     if (key == "BBC3")   return std::make_unique<BBC3Functional>();
     if (key == "GEO")     return std::make_unique<GEOFunctional>();
-    // OptGM@a;b;c with three floats separated by ';' (commas are reserved for
-    // the driver's --funcs list).  Angles are normalized to a^2+b^2+c^2 = 1;
-    // weights on the three GEO channels are a^2, b^2, c^2.
-    if (key.rfind("OptGM@", 0) == 0) {
-        const std::string rest = key.substr(6);
+    // OptGeo@a;b;c — three angles (commas reserved in --funcs).
+    if (key.rfind("OptGeo@", 0) == 0) {
+        const std::string rest = key.substr(7);
         double a = 0.0, b = 0.0, c = 0.0;
         if (std::sscanf(rest.c_str(), "%lf;%lf;%lf", &a, &b, &c) == 3) {
-            return std::make_unique<OptGMFunctional>(a, b, c);
+            return std::make_unique<OptGeoFunctional>(a, b, c);
+        }
+        return nullptr;
+    }
+    // OptGM@lambda;alpha — HF / Power(alpha) mixture weight and Power exponent.
+    if (key.rfind("OptGM@", 0) == 0) {
+        const std::string rest = key.substr(6);
+        double lam = 0.0, al = 0.55;
+        if (std::sscanf(rest.c_str(), "%lf;%lf", &lam, &al) == 2) {
+            return std::make_unique<OptGMFunctional>(lam, al);
         }
         return nullptr;
     }
