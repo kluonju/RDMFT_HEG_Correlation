@@ -173,7 +173,7 @@ def main() -> None:
         default="",
         help="Comma-separated r_s list (default: built-in benchmark grid)",
     )
-    ap.add_argument("--N", type=int, default=401, help="Grid points for main / final run")
+    ap.add_argument("--N", type=int, default=801, help="Grid points for main / final run")
     ap.add_argument("--kmax", type=float, default=3.0, help="k_max in units of k_F")
     ap.add_argument("--lam-min", type=float, default=0.0, help="Lower bound on lambda")
     ap.add_argument("--lam-max", type=float, default=1.0, help="Upper bound on lambda")

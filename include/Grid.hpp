@@ -87,7 +87,7 @@ struct Grid {
     // Piecewise-uniform mesh: coarse outside a band around k_F, dense inside,
     // with k_F exactly a grid node.  ~80% of the dense cells sit at k <= k_F,
     // and the left wing [0, k_lo] gets extra weight in the NL/NR split so
-    // k < k_F is well resolved for n(k) plots (use N=401, k_max = 3 k_F).
+    // k < k_F is well resolved for n(k) plots (typical N=801, k_max = 3 k_F).
     static Grid graded_fermi_trapezoid(double k_F, double k_max_min,
                                        std::size_t N_target) {
         assert(k_F > 0.0 && k_max_min > k_F && N_target >= 21u);

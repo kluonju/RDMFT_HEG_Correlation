@@ -62,7 +62,7 @@ $(TEST_BIN): tests/test_hf_exchange.cpp $(HEADERS) | $(BIN_DIR)
 # previously-computed ones untouched.
 run: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N 401 --kmax 3 \
+	./$(TARGET) --N 801 --kmax 3 \
 		--rs $(RS_LIST) \
 		--funcs "$(FUNCS)" \
 		--out-dir $(DATA_DIR)
@@ -70,7 +70,7 @@ run: $(TARGET)
 # Full rebuild: --force overwrites every functional's TSV.
 rerun: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N 401 --kmax 3 \
+	./$(TARGET) --N 801 --kmax 3 \
 		--rs $(RS_LIST) \
 		--funcs "$(FUNCS)" \
 		--out-dir $(DATA_DIR) \
@@ -79,7 +79,7 @@ rerun: $(TARGET)
 # Convenience target: only refresh GEO (e.g. after tweaking its kernel).
 geo: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N 401 --kmax 3 \
+	./$(TARGET) --N 801 --kmax 3 \
 		--rs $(RS_LIST) \
 		--funcs GEO \
 		--out-dir $(DATA_DIR) \
@@ -88,7 +88,7 @@ geo: $(TARGET)
 # Angles match ``data/log`` recommended CLI (rounded); change if you re-fit.
 optgeo: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N 401 --kmax 3 \
+	./$(TARGET) --N 801 --kmax 3 \
 		--rs $(RS_LIST) \
 		--funcs "OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545538598386" \
 		--out-dir $(DATA_DIR) \
@@ -97,7 +97,7 @@ optgeo: $(TARGET)
 # Sample three-weight OptGM sweep (edit weights; quote for shell).
 optgm: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N 401 --kmax 3 \
+	./$(TARGET) --N 801 --kmax 3 \
 		--rs $(RS_LIST) \
 		--funcs 'OptGM@0.45;0.56' \
 		--out-dir $(DATA_DIR) \
@@ -116,7 +116,7 @@ plot:
 
 nk-data: $(TARGET)
 	mkdir -p $(NK_DIR)
-	./$(TARGET) --N 401 --kmax 3 \
+	./$(TARGET) --N 801 --kmax 3 \
 		--rs $(RS_LIST) \
 		--funcs "$(NK_FUNCS)" \
 		--out-dir $(DATA_DIR) --nk-out $(NK_DIR)

@@ -41,9 +41,9 @@ struct Args {
         0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0
     };
     std::vector<std::string> funcs;  // must be set via --funcs (no silent default list)
-    // Standard sweep (Makefile / nk figures): 401 odd nodes, k_max = 3 k_F;
+    // Standard sweep (Makefile / nk figures): 801 odd nodes, k_max = 3 k_F;
     // ``Grid::uniform_trapezoid`` on [0, k_max] (composite trapezoid weights).
-    int    N_grid = 401;
+    int    N_grid = 801;
     double k_max_factor = 3.0;   // k_max = factor * k_F  (default 3 => k/k_F <= 3)
     std::string out_dir = "data";
     std::string nk_out_dir;  // if non-empty, write n(k) TSVs under this directory
@@ -61,7 +61,7 @@ void print_help() {
         "                       OptGeo: GEO-style three channels; three angles (two ';').\n"
         "                       OptGM: (1-lambda) HF + lambda Power(alpha); two floats (one ';').\n"
         "                       Shell: quote keys that contain ';' (e.g. --funcs 'OptGM@0.4;0.56').\n"
-        "  --N <int>            #grid points (odd, default 401)\n"
+        "  --N <int>            #grid points (odd, default 801)\n"
         "  --kmax <float>       k_max = factor * k_F(r_s) at each r_s (default 3)\n"
         "  --out-dir <dir>      directory for per-functional TSVs (default data)\n"
         "  --nk-out <dir>       write n(k) to <dir>/<func>_rs<rs>.tsv for each solve.\n"

@@ -14,7 +14,7 @@ Example::
 
 Only functionals listed in ``plot_common.WANTED_SERIES`` are drawn (same as
 the correlation-energy figure, including CGA and CHF). The x-axis is fixed to
-``0 <= k/k_F <= 3``.  Driver exports use ``--N 401 --kmax 3`` (401 odd points,
+``0 <= k/k_F <= 3``.  Driver exports use ``--N 801 --kmax 3`` (801 odd points,
 ``k_max = 3 k_F``) on a uniform k grid (composite trapezoid).
 nk TSVs that declare ``# converged: 0`` are excluded; legacy exports without
 that line are still plotted.

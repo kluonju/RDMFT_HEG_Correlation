@@ -289,8 +289,8 @@ def main() -> None:
     ap.add_argument(
         "--N",
         type=int,
-        default=401,
-        help="Grid points for the main optimization / final run (Makefile: 401).",
+        default=801,
+        help="Grid points for the main optimization / final run (Makefile: 801).",
     )
     ap.add_argument(
         "--kmax",
