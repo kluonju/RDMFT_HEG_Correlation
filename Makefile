@@ -7,11 +7,11 @@
 #                      driver's uniform k mesh on [0, k_max] (Grid::uniform_trapezoid in main.cpp).
 #   make geo        -- (re)compute only the GEO functional into data/GEO.tsv
 #   make optgeo     -- (re)compute optGeo (angles from data/log optimization)
-#   make plot       -- all figures: correlation_energy, nk, nk_optgeo, nk_optgm
+#   make plot       -- all figures: correlation_energy, nk, nk_optgeo, nk_hybopt
 #   make nk-data     -- export n(k) TSVs under data/nk (same funcs as correlation figure)
 #   make plot-nk     -- figures/nk.png (only r_s that exist under data/nk; --rs auto)
 #   make plot-nk-optgeo -- figures/nk_optgeo.png (optGeo n(k) overlay only)
-#   make plot-nk-optgm  -- figures/nk_optgm.png (optGM n(k) overlay; skips if no nk TSVs)
+#   make plot-nk-hybopt  -- figures/nk_hybopt.png (hybopt n(k) overlay; skips if no nk TSVs)
 #   make test       -- run the HF exchange unit test
 #   make clean      -- remove build artifacts
 #   make clean-data -- remove every per-functional TSV under data/
@@ -39,12 +39,13 @@ DATA_DIR := data
 RS_LIST  := 0.2,0.3,0.5,1,2,3,4,5,6,8,10
 # Default sweep: only these functionals (edit FUNCS). OptGeo uses ';' — quote for the shell.
 # OptGeo: (a;b;c) on unit sphere; weights w1,w2,w3 = a^2,b^2,c^2 = 0.00675,0.64213,0.35112
-FUNCS := Mueller,CGA,CHF,OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545538598386,Power@0.55,Power@0.58
+# HybOpt: HF/Power mix fit vs PW92 on r_s in [0.2, 6] at N=401 (see data/optimize_optGM_rs6.log).
+FUNCS := Mueller,CGA,CHF,OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545538598386,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076
 
 NK_DIR := data/nk
 NK_FUNCS := $(FUNCS)
 
-.PHONY: all run rerun geo optgeo optgm plot nk-data plot-nk plot-nk-optgeo plot-nk-optgm test clean clean-data
+.PHONY: all run rerun geo optgeo hybopt plot nk-data plot-nk plot-nk-optgeo plot-nk-hybopt test clean clean-data
 
 all: $(TARGET) $(TEST_BIN)
 
@@ -94,12 +95,12 @@ optgeo: $(TARGET)
 		--out-dir $(DATA_DIR) \
 		--force
 
-# Sample three-weight OptGM sweep (edit weights; quote for shell).
-optgm: $(TARGET)
+# Refit HybOpt (lambda; alpha) only; matches FUNCS HybOpt@… (edit there + here if you re-fit).
+hybopt: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N 801 --kmax 3 \
+	./$(TARGET) --N 401 --kmax 3 \
 		--rs $(RS_LIST) \
-		--funcs 'OptGM@0.45;0.56' \
+		--funcs 'HybOpt@0.938328;0.541076' \
 		--out-dir $(DATA_DIR) \
 		--force
 
@@ -111,8 +112,8 @@ plot:
 		--out figures/nk.png
 	python3 scripts/plot_nk_optgeo.py --dir $(NK_DIR) --rs auto \
 		--out figures/nk_optgeo.png
-	python3 scripts/plot_nk_optgm.py --dir $(NK_DIR) --rs auto \
-		--out figures/nk_optgm.png
+	python3 scripts/plot_nk_hybopt.py --dir $(NK_DIR) --rs auto \
+		--out figures/nk_hybopt.png
 
 nk-data: $(TARGET)
 	mkdir -p $(NK_DIR)
@@ -131,10 +132,10 @@ plot-nk-optgeo:
 	python3 scripts/plot_nk_optgeo.py --dir $(NK_DIR) --rs auto \
 		--out figures/nk_optgeo.png
 
-plot-nk-optgm:
+plot-nk-hybopt:
 	mkdir -p figures
-	python3 scripts/plot_nk_optgm.py --dir $(NK_DIR) --rs auto \
-		--out figures/nk_optgm.png
+	python3 scripts/plot_nk_hybopt.py --dir $(NK_DIR) --rs auto \
+		--out figures/nk_hybopt.png
 
 test: $(TEST_BIN)
 	./$(TEST_BIN)

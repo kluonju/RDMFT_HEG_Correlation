@@ -375,7 +375,7 @@ private:
     double w1_, w2_, w3_;
 };
 
-// optGM: convex mixture of the HF pair kernel and the Power pair kernel
+// HybOpt (hybrid HF/Power): convex mixture of the HF pair kernel and Power pair kernel
 //
 //     K(n_i, n_j) = (1 - lambda) * n_i n_j
 //                 + lambda * n_i^alpha * n_j^alpha,
@@ -384,11 +384,12 @@ private:
 // ``HFFunctional`` / ``PowerFunctional``.  ``lambda`` is clamped to ``[0, 1]``;
 // ``alpha`` must be positive (also capped in the ctor for numerical safety).
 //
-// CLI: ``OptGM@lambda;alpha`` (one semicolon, two floats).  Solved via the generic
-// projected-gradient branch in ``solve_rdmft`` (symmetric non-factorizable kernel).
-class OptGMFunctional : public Functional {
+// CLI: ``HybOpt@lambda;alpha`` (one semicolon, two floats).  Legacy ``OptGM@...``
+// is accepted as an alias.  Solved via the specialized HF/Power-mix branch in
+// ``solve_rdmft``.
+class HybOptFunctional : public Functional {
 public:
-    explicit OptGMFunctional(double lambda, double alpha) {
+    explicit HybOptFunctional(double lambda, double alpha) {
         if (lambda < 0.0)       lambda_ = 0.0;
         else if (lambda > 1.0) lambda_ = 1.0;
         else                   lambda_ = lambda;
@@ -405,7 +406,7 @@ public:
 
     std::string name() const override {
         char buf[96];
-        std::snprintf(buf, sizeof(buf), "optGM(lam=%.4g,alpha=%.4g)", lambda_, alpha_);
+        std::snprintf(buf, sizeof(buf), "hybopt(lam=%.4g,alpha=%.4g)", lambda_, alpha_);
         return std::string(buf);
     }
     double f(double n) const override {
@@ -584,12 +585,20 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
         }
         return nullptr;
     }
-    // OptGM@lambda;alpha — HF / Power(alpha) mixture weight and Power exponent.
+    // HybOpt@lambda;alpha — HF / Power(alpha) mixture (legacy OptGM@ accepted).
+    if (key.rfind("HybOpt@", 0) == 0) {
+        const std::string rest = key.substr(8);
+        double lam = 0.0, al = 0.55;
+        if (std::sscanf(rest.c_str(), "%lf;%lf", &lam, &al) == 2) {
+            return std::make_unique<HybOptFunctional>(lam, al);
+        }
+        return nullptr;
+    }
     if (key.rfind("OptGM@", 0) == 0) {
         const std::string rest = key.substr(6);
         double lam = 0.0, al = 0.55;
         if (std::sscanf(rest.c_str(), "%lf;%lf", &lam, &al) == 2) {
-            return std::make_unique<OptGMFunctional>(lam, al);
+            return std::make_unique<HybOptFunctional>(lam, al);
         }
         return nullptr;
     }

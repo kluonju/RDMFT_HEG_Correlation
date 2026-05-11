@@ -2,7 +2,7 @@
 """Plot RDMFT correlation energies vs rs from per-functional TSVs.
 
 Reads ``*.tsv`` files under ``--in`` and overlays the PW92 QMC reference with
-Müller, CGA, CHF, optGM, Power(0.55/0.58) (see ``plot_common.WANTED_SERIES``).
+Müller, CGA, CHF, hybopt, Power(0.55/0.58) (see ``plot_common.WANTED_SERIES``).
 Only rows with ``converged == 1`` are plotted (non-converged SCF points are dropped).
 The directory layout matches the rdmft_heg driver:
 
@@ -164,7 +164,7 @@ def main():
             marker=mk,
             label=name,
             linewidth=1.5,
-            markersize=6 if name == "optGM" else 5,
+            markersize=6 if name == "hybopt" else 5,
         )
 
     apply_rs_ticks(ax, series, qmc_rs)

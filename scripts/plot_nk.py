@@ -262,7 +262,7 @@ def main() -> None:
                 color=c,
                 marker=mk,
                 markevery=max(1, len(x) // 20),
-                markersize=5 if key == "optGM" else 4,
+                markersize=5 if key == "hybopt" else 4,
                 linewidth=1.4,
                 label=key,
             )

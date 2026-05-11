@@ -57,10 +57,11 @@ void print_help() {
         "  --rs <list>          comma-separated rs values\n"
         "  --funcs <list>       **required** comma-separated functionals\n"
         "                       (HF, Mueller, GU, CGA, CHF, BBC1, BBC3, GEO,\n"
-        "                        OptGeo@<a>;<b>;<c>, OptGM@lambda;alpha, Power@<alpha>, Beta@<beta>)\n"
+        "                        OptGeo@<a>;<b>;<c>, HybOpt@lambda;alpha, Power@<alpha>, Beta@<beta>)\n"
         "                       OptGeo: GEO-style three channels; three angles (two ';').\n"
-        "                       OptGM: (1-lambda) HF + lambda Power(alpha); two floats (one ';').\n"
-        "                       Shell: quote keys that contain ';' (e.g. --funcs 'OptGM@0.4;0.56').\n"
+        "                       HybOpt: (1-lambda) HF + lambda Power(alpha); two floats (one ';').\n"
+        "                       Shell: quote keys that contain ';' (e.g. --funcs 'HybOpt@0.4;0.56').\n"
+        "                       OptGM@... is accepted as a legacy alias for HybOpt@....\n"
         "  --N <int>            #grid points (odd, default 801)\n"
         "  --kmax <float>       k_max = factor * k_F(r_s) at each r_s (default 3)\n"
         "  --out-dir <dir>      directory for per-functional TSVs (default data)\n"
@@ -120,7 +121,8 @@ std::unique_ptr<Functional> make(const std::string& key) {
         double beta = std::stod(key.substr(5));
         return std::make_unique<BetaFunctional>(beta);
     }
-    if (key.rfind("OptGeo@", 0) == 0 || key.rfind("OptGM@", 0) == 0) {
+    if (key.rfind("OptGeo@", 0) == 0 || key.rfind("HybOpt@", 0) == 0
+        || key.rfind("OptGM@", 0) == 0) {
         return make_functional(key);
     }
     return make_functional(key);

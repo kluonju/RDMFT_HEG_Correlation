@@ -1,19 +1,20 @@
 """Shared curve list and styles for correlation-energy and n(k) figures.
 
-``WANTED_SERIES`` / ``WANTED_SET`` define which functionals appear in both plots.
+``WANTED_SERIES`` / ``WANTED_SET`` define which functionals appear in both plots
+(Müller, CGA, CHF, Power curves, hybopt = HybOpt HF/Power mix).
 """
 
 from __future__ import annotations
 
 # Curves (after Monte Carlo / PW92), fixed order for legends.
-# optGM last so it is drawn on top (z-order highlight) and appears last in the legend.
+# hybopt last so it is drawn on top (z-order highlight) and appears last in the legend.
 WANTED_SERIES = (
     "Mueller",
     "CGA",
     "CHF",
     "Power(0.55)",
     "Power(0.58)",
-    "optGM",
+    "hybopt",
 )
 
 WANTED_SET = frozenset(WANTED_SERIES)
@@ -21,7 +22,7 @@ WANTED_SET = frozenset(WANTED_SERIES)
 MONTE_CARLO_LABEL = "Monte Carlo (PW92)"
 
 # (color, linestyle, marker); marker None => no markers on line.
-# RDMFT curves use dashed lines; Monte Carlo solid black; optGM solid blue (highlight).
+# RDMFT curves use dashed lines; Monte Carlo solid black; hybopt solid blue (highlight).
 SUBSET_STYLE: dict[str, tuple[str | None, str, str | None]] = {
     MONTE_CARLO_LABEL: ("black", "-", None),
     "Mueller": ("#21c7d6", "--", "o"),
@@ -29,7 +30,7 @@ SUBSET_STYLE: dict[str, tuple[str | None, str, str | None]] = {
     "CHF": ("#9467bd", "--", "^"),
     "optGeo": ("#006400", "--", "h"),
     # Solid blue + diamonds + drawn last (stands out vs dashed RDMFT curves).
-    "optGM": ("#1f77b4", "-", "D"),
+    "hybopt": ("#1f77b4", "-", "D"),
     "Power(0.55)": ("#d62728", "--", "s"),
     "Power(0.58)": ("#2ca02c", "--", "o"),
 }
@@ -45,12 +46,14 @@ def pretty_functional_name(fn: str) -> str:
             return fn
     if fn.startswith("optGeo("):
         return "optGeo"
+    if fn.startswith("hybopt("):
+        return "hybopt"
     if fn.startswith("optGMw("):
-        return "optGM"
+        return "hybopt"
     if fn.startswith("optGM("):
-        # optGM(lam=...,alpha=...). Old: optGM(a=,b=,c=) optGeo-style labels; w_hf= obsolete triple-weight.
+        # hybopt(lam=...,alpha=...) legacy optGM label; optGM(a=,b=,c=) optGeo-style.
         if "lam=" in fn or "alpha=" in fn or "w_hf=" in fn or ("hole=" in fn and "lam=" not in fn):
-            return "optGM"
+            return "hybopt"
         return "optGeo"
     return fn
 

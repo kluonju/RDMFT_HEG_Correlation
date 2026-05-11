@@ -1,4 +1,4 @@
-# SciPy is required for optimize_optGM.py (lambda, alpha box search for OptGM@...).
+# SciPy is required for optimize_hybopt.py (lambda, alpha box search for HybOpt@...).
 # SciPy is recommended for optimize_optGeo.py (L-BFGS-B / Powell / etc.).
 # NumPy suffices for optimize_optGeo.py if you stick to its built-in paths where applicable.
 numpy>=1.20

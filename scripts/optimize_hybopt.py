@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optimize ``OptGM@lambda;alpha`` vs PW92 correlation energy (same target as ``Ec_QMC`` in TSVs).
+"""Optimize ``HybOpt@lambda;alpha`` vs PW92 correlation energy (same target as ``Ec_QMC`` in TSVs).
 
 The C++ kernel is::
 
@@ -12,7 +12,7 @@ This script minimizes RMSE of model ``Ec_per_N`` vs **PW92** ``ec(rs)`` (the QMC
 parameterization used throughout the repo and printed as ``Ec_QMC`` by
 ``rdmft_heg``).
 
-**SciPy is required.**  Install: ``pip install -r scripts/requirements-optgm.txt``.
+**SciPy is required.**  Install: ``pip install -r scripts/requirements-hybopt.txt``.
 
 For **optGeo** angles use ``scripts/optimize_optGeo.py``.
 """
@@ -66,7 +66,7 @@ def tsv_stem_for_func_key(key: str) -> str:
     return s + ".tsv"
 
 
-def run_rdmft_optgm(
+def run_rdmft_hybopt(
     exe: Path,
     lam: float,
     alpha: float,
@@ -76,9 +76,9 @@ def run_rdmft_optgm(
     kmax: float | None,
     verbose: bool,
 ) -> dict[float, float]:
-    """Run rdmft_heg once for ``OptGM@lambda;alpha``; return {rs: Ec}."""
+    """Run rdmft_heg once for ``HybOpt@lambda;alpha``; return {rs: Ec}."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    key = f"OptGM@{lam:.12g};{alpha:.12g}"
+    key = f"HybOpt@{lam:.12g};{alpha:.12g}"
     cmd = [
         str(exe),
         "--funcs",
@@ -128,7 +128,7 @@ def rmse_ec(
 
 
 def default_rs() -> list[float]:
-    return [0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0]
+    return [0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
 
 def clamp_la(
@@ -155,15 +155,15 @@ def prescreen_pairs() -> list[tuple[str, float, float]]:
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
-            "Optimize OptGM@lambda;alpha vs PW92 E_c (2D box; SciPy required). "
+            "Optimize HybOpt@lambda;alpha vs PW92 E_c (2D box; SciPy required). "
             "Kernel: (1-lambda)*HF + lambda*Power(alpha)."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python3 scripts/optimize_optGM.py --rs 2,3,5\n"
-            "  python3 scripts/optimize_optGM.py --alpha-min 0.45 --alpha-max 0.65 --method differential-evolution\n"
-            "Writes build/optgm_best/ and a quoted --funcs line."
+            "  python3 scripts/optimize_hybopt.py --rs 2,3,5\n"
+            "  python3 scripts/optimize_hybopt.py --alpha-min 0.45 --alpha-max 0.65 --method differential-evolution\n"
+            "Writes build/hybopt_best/ and a quoted --funcs line."
         ),
     )
     ap.add_argument("--exe", type=Path, default=Path("build/rdmft_heg"), help="rdmft_heg path")
@@ -173,7 +173,7 @@ def main() -> None:
         default="",
         help="Comma-separated r_s list (default: built-in benchmark grid)",
     )
-    ap.add_argument("--N", type=int, default=801, help="Grid points for main / final run")
+    ap.add_argument("--N", type=int, default=401, help="Grid points for main / final run")
     ap.add_argument("--kmax", type=float, default=3.0, help="k_max in units of k_F")
     ap.add_argument("--lam-min", type=float, default=0.0, help="Lower bound on lambda")
     ap.add_argument("--lam-max", type=float, default=1.0, help="Upper bound on lambda")
@@ -215,7 +215,7 @@ def main() -> None:
     ap.add_argument(
         "--prescreen-rs",
         type=str,
-        default="0.2,1.0,5.0,10.0",
+        default="0.2,1.0,5.0,6.0",
         help="Comma-separated r_s for prescreen",
     )
     ap.add_argument("--prescreen-N", type=int, default=101, help="N during prescreen")
@@ -266,9 +266,9 @@ def main() -> None:
     prescreen_rs = [float(x) for x in args.prescreen_rs.split(",") if x.strip()]
     ec_ref_pre = {rs: pw92_ec_per_electron(rs) for rs in prescreen_rs}
 
-    tmp_root = Path(tempfile.mkdtemp(prefix="optgm_la_", dir=repo_root / "build"))
+    tmp_root = Path(tempfile.mkdtemp(prefix="hybopt_la_", dir=repo_root / "build"))
     log("")
-    log("=== OptGM (lambda, alpha) vs PW92 — RMSE(E_c) ===")
+    log("=== HybOpt (lambda, alpha) vs PW92 — RMSE(E_c) ===")
     log(f"  executable: {exe}")
     log(f"  box: lambda in [{lam_min}, {lam_max}], alpha in [{a_min}, {a_max}]")
     log(f"  main grid:  N={args.N}  kmax={args.kmax}")
@@ -284,7 +284,7 @@ def main() -> None:
         n_eval[0] += 1
         t0 = time.perf_counter()
         try:
-            ec_model = run_rdmft_optgm(
+            ec_model = run_rdmft_hybopt(
                 exe, lam, alpha, rs_list, run_dir, args.N, args.kmax, args.verbose
             )
         except (RuntimeError, FileNotFoundError) as exc:
@@ -312,7 +312,7 @@ def main() -> None:
             run_dir = pre_root / f"cand_{idx:02d}"
             t0 = time.perf_counter()
             try:
-                ec_m = run_rdmft_optgm(
+                ec_m = run_rdmft_hybopt(
                     exe,
                     lam,
                     alpha,
@@ -410,16 +410,16 @@ def main() -> None:
     log(f"  success={success}  rdmft_evals={n_eval[0]}  main-phase={nfev_main}")
     log(f"  final RMSE: {final_rmse:.5e}")
     log(f"  refined lambda={lam_opt:.8f}  alpha={a_opt:.8f}")
-    key_q = f"OptGM@{lam_r:.{d}f};{a_r:.{d}f}"
+    key_q = f"HybOpt@{lam_r:.{d}f};{a_r:.{d}f}"
     log(f"\n  Recommended: {key_q}")
     log(f"  rdmft_heg: --funcs '{key_q}'")
 
-    final_dir = repo_root / "build" / "optgm_best"
+    final_dir = repo_root / "build" / "hybopt_best"
     if final_dir.exists():
         shutil.rmtree(final_dir)
     final_dir.mkdir(parents=True)
     log(f"\n--- final validation -> {final_dir} ---")
-    ec_final = run_rdmft_optgm(exe, lam_r, a_r, rs_list, final_dir, args.N, args.kmax, args.verbose)
+    ec_final = run_rdmft_hybopt(exe, lam_r, a_r, rs_list, final_dir, args.N, args.kmax, args.verbose)
     for rs in rs_list:
         em = ec_final.get(rs, float("nan"))
         er = ec_ref[rs]

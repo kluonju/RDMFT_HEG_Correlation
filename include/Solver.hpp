@@ -257,7 +257,7 @@ update_occupations_geo(double mu,
     return n;
 }
 
-// OptGM: K = c1 n_i n_j + c2 n_i^alpha n_j^alpha with c1 = 1-lambda, c2 = lambda.
+// HybOpt (HF/Power mix): K = c1 n_i n_j + c2 n_i^alpha n_j^alpha with c1 = 1-lambda, c2 = lambda.
 // EL per orbital: c1 f1'(n) U1 + c2 f2'(n) U2 = pi k (k^2/2 - mu), f1=n, f2=n^alpha.
 // For 0 < alpha < 1 and U1, U2 >= 0 the LHS is strictly decreasing in n on (0,1).
 inline std::vector<double>
@@ -442,7 +442,7 @@ inline std::vector<double> compute_U_with(const std::vector<double>& nv,
 }
 
 // Smeared initial guess: a sigmoid centred at the Fermi wave vector, which
-// helps Beta, CGA / CHF, GEO, optGeo, and optGM (HF/Power mix, PGD) escape a trivial HF-step-like fixed
+// helps Beta, CGA / CHF, GEO, optGeo, and hybopt (HF/Power mix) escape a trivial HF-step-like fixed
 // point.  width controls the fractional smearing relative to k_F.
 inline std::vector<double>
 initial_smeared(double rs, const Grid& g, double width = 0.10) {
@@ -458,7 +458,7 @@ initial_smeared(double rs, const Grid& g, double width = 0.10) {
 
 // Self-consistent solve for any Functional.  Power-family functionals use the
 // closed-form occupation update; CGA, CHF, and Beta use the additive branch
-// with a dedicated 1-D inverter; BBC1, BBC3, GEO / optGeo, and optGM use projected
+// with a dedicated 1-D inverter; BBC1, BBC3, GEO / optGeo, and hybopt use projected
 // gradient.  All branches bisect on mu for particle conservation.
 //
 // Beta, CGA, and CHF can show a competing HF-like minimum; we therefore try
@@ -492,7 +492,7 @@ solve_rdmft(double rs,
     // generic projected-gradient branch below (no special-case here).
     const GEOFunctional*    geo       = dynamic_cast<const GEOFunctional*>(&F);
     const OptGeoFunctional* optgeo    = dynamic_cast<const OptGeoFunctional*>(&F);
-    const OptGMFunctional* optgm = dynamic_cast<const OptGMFunctional*>(&F);
+    const HybOptFunctional* hybopt = dynamic_cast<const HybOptFunctional*>(&F);
     const BBC3Functional*   bbc3      = dynamic_cast<const BBC3Functional*>(&F);
 
     double alpha = 1.0;
@@ -512,9 +512,9 @@ solve_rdmft(double rs,
     // occupied initial conditions.  For factorized and generic functionals
     // one start (sharp step) is enough.
     // Smeared multi-start helps additive CGA / CHF / Beta and GEO / optGeo /
-    // optGM / BBC3 escape the trivial HF-step fixed point.
+    // hybopt / BBC3 escape the trivial HF-step fixed point.
     const bool needs_multistart = additive || (geo != nullptr)
-                                  || (optgeo != nullptr) || (optgm != nullptr)
+                                  || (optgeo != nullptr) || (hybopt != nullptr)
                                   || (bbc3 != nullptr);
     const std::vector<std::pair<bool, double>> starts = needs_multistart
         ? std::vector<std::pair<bool, double>>{
@@ -583,9 +583,9 @@ solve_rdmft(double rs,
             auto U = compute_U(n);
             mu = bisect_mu_factorized(U);
             n_target = update_occupations_power(alpha, mu, U, g);
-        } else if (optgm) {
-            const double lam = optgm->lambda_mix();
-            const double al = optgm->alpha();
+        } else if (hybopt) {
+            const double lam = hybopt->lambda_mix();
+            const double al = hybopt->alpha();
             auto f_pow = [al](double nn) {
                 const double eps = 1.0e-14;
                 const double x = (nn > 0.0) ? nn : 0.0;
@@ -596,7 +596,7 @@ solve_rdmft(double rs,
             auto U2 = compute_U_with(n, g, W, f_pow);
             const double c1 = 1.0 - lam;
             const double c2 = lam;
-            auto bisect_mu_optgm = [&]() {
+            auto bisect_mu_hybopt = [&]() {
                 double lo = opt.mu_lo, hi = opt.mu_hi;
                 for (int b = 0; b < opt.bisect_iter; ++b) {
                     const double m = 0.5 * (lo + hi);
@@ -606,7 +606,7 @@ solve_rdmft(double rs,
                 }
                 return 0.5 * (lo + hi);
             };
-            mu = bisect_mu_optgm();
+            mu = bisect_mu_hybopt();
             n_target = update_occupations_hf_power_mix(mu, U1, U2, g, c1, c2, al);
         } else if (geo || optgeo) {
             // Multi-power GEO / optGeo kernel: build U1, U2, U3 with f1(n) = n,
