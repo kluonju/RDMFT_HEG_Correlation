@@ -169,7 +169,7 @@ def main():
 
     apply_rs_ticks(ax, series, qmc_rs)
     ax.set_xlabel(r"$r_s$ (a.u.)")
-    ax.set_ylabel(r"Correlation energy per electron $E_c$ (hartree)")
+    ax.set_ylabel(r"$E_c$ (hartree) per electron ")
     ax.axhline(0, color="0.6", linewidth=0.6, linestyle="-")
     ax.grid(True, which="both", alpha=0.25)
     # Y-axis from data + QMC (padding); keeps all wanted curves visible.

@@ -19,7 +19,7 @@ WANTED_SERIES = (
 
 WANTED_SET = frozenset(WANTED_SERIES)
 
-MONTE_CARLO_LABEL = "Monte Carlo (PW92)"
+MONTE_CARLO_LABEL = "QMC"
 
 # (color, linestyle, marker); marker None => no markers on line.
 # RDMFT curves use dashed lines; Monte Carlo solid black; hybopt solid blue (highlight).
