@@ -105,7 +105,7 @@ def main() -> None:
             ls_gm,
             color=colors[i],
             marker=mk_gm,
-            markevery=max(1, len(x) // 25),
+            markevery=max(1, len(x) // 60),
             markersize=3.5,
             linewidth=1.35,
             label=lbl,

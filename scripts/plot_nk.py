@@ -261,7 +261,7 @@ def main() -> None:
                 ls,
                 color=c,
                 marker=mk,
-                markevery=max(1, len(x) // 20),
+                markevery=max(1, len(x) // 60),
                 markersize=5 if key == "hybopt" else 4,
                 linewidth=1.4,
                 label=key,

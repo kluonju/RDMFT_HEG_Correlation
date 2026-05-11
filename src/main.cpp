@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -49,6 +50,8 @@ struct Args {
     std::string nk_out_dir;  // if non-empty, write n(k) TSVs under this directory
     bool   force = false;
     bool   verbose = false;
+    // If set, solver seeds n(k) uniformly (clamped to [0,1]); single-start only.
+    std::optional<double> init_uniform_n;
 };
 
 void print_help() {
@@ -70,6 +73,8 @@ void print_help() {
         "                       unless --force is given (then both are refreshed).\n"
         "  --force              recompute and overwrite existing TSVs\n"
         "                       (default: skip functionals whose TSV exists)\n"
+        "  --init-uniform <n>   initial occupation n(k)=<n> on the grid (clamped to [0,1]);\n"
+        "                       uses one multistart trial instead of step/smeared seeds\n"
         "  --verbose            verbose solver logs\n"
         "  --help               show this help and exit\n";
 }
@@ -106,6 +111,7 @@ Args parse_args(int argc, char** argv) {
         else if (s == "--out-dir")   a.out_dir = next();
         else if (s == "--nk-out")    a.nk_out_dir = next();
         else if (s == "--force")     a.force   = true;
+        else if (s == "--init-uniform") a.init_uniform_n = std::stod(next());
         else if (s == "--verbose")   a.verbose = true;
         else { std::cerr << "Unknown arg: " << s << "\n"; print_help(); std::exit(1); }
     }
@@ -244,6 +250,7 @@ int main(int argc, char** argv) {
             opt.tol_n    = 1.0e-8;
             opt.max_iter = 1200;
             opt.mix      = 0.40;
+            opt.init_uniform_n = args.init_uniform_n;
 
             SolveResult r = solve_rdmft(rs, *F, g, W, opt);
 

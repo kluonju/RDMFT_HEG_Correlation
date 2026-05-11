@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <optional>
 #include <vector>
 
 #include "Energy.hpp"
@@ -22,6 +23,9 @@ struct SolveOptions {
     double mu_lo         = -50.0;
     double mu_hi         =  50.0;
     bool   verbose       = false;
+    // If set, seed n(k) uniformly to this value (clamped to [0,1]) and use a
+    // single start instead of the smearing multistart grid.
+    std::optional<double> init_uniform_n;
 };
 
 struct SolveResult {
@@ -124,6 +128,11 @@ inline std::vector<double> initial_step(double rs, const Grid& g) {
     const double kf = HEG::kF(rs);
     for (std::size_t i = 0; i < g.n(); ++i) n[i] = (g.k[i] < kf) ? 1.0 : 0.0;
     return n;
+}
+
+inline std::vector<double> initial_constant(const Grid& g, double n0) {
+    const double n = std::clamp(n0, 0.0, 1.0);
+    return std::vector<double>(g.n(), n);
 }
 
 // For CGA, g(n) = sqrt(n(2-n)) on [0,1] and g'(n) = (1-n)/sqrt(n(2-n)).
@@ -516,19 +525,23 @@ solve_rdmft(double rs,
     const bool needs_multistart = additive || (geo != nullptr)
                                   || (optgeo != nullptr) || (hybopt != nullptr)
                                   || (bbc3 != nullptr);
-    const std::vector<std::pair<bool, double>> starts = needs_multistart
-        ? std::vector<std::pair<bool, double>>{
-              {false, 0.05}, {false, 0.10}, {false, 0.20},
-              {false, 0.40}, {false, 0.80}, {false, 1.50}}
-        : std::vector<std::pair<bool, double>>{{true, 0.0}};
+    const bool uniform_init = opt.init_uniform_n.has_value();
+    const std::vector<std::pair<bool, double>> starts = uniform_init
+        ? std::vector<std::pair<bool, double>>{{true, 0.0}}
+        : (needs_multistart
+               ? std::vector<std::pair<bool, double>>{
+                     {false, 0.05}, {false, 0.10}, {false, 0.20},
+                     {false, 0.40}, {false, 0.80}, {false, 1.50}}
+               : std::vector<std::pair<bool, double>>{{true, 0.0}});
 
     SolveResult best;
     bool best_set = false;
     for (const auto& start : starts) {
 
-    std::vector<double> n = start.first
-        ? initial_step(rs, g)
-        : initial_smeared(rs, g, start.second);
+    std::vector<double> n =
+        uniform_init ? initial_constant(g, *opt.init_uniform_n)
+                     : (start.first ? initial_step(rs, g)
+                                    : initial_smeared(rs, g, start.second));
     double mu = 0.5 * HEG::kF(rs) * HEG::kF(rs);
     int it = 0;
     bool converged = false;
