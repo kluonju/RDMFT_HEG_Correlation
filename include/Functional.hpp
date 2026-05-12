@@ -445,6 +445,94 @@ private:
     double alpha_;
 };
 
+
+// BOW functional [T. Baldsiefen, A. Cangi, F. G. Eich, and E. K. U. Gross,
+// Phys. Rev. A 96, 062508 (2017), Appendix C].  The pair kernel is
+//
+//     K_BOW(n_i, n_j; alpha) = x^alpha - alpha x + alpha
+//                              - alpha (1 - x)^(1 / alpha),
+//     x = n_i n_j.
+//
+// It reduces to Hartree-Fock for alpha = 1, preserves K(0,*) = 0 and
+// K(1,1) = 1, and introduces the "bow" shape used in the Baldsiefen et al.
+// HEG momentum-distribution fit.  Table IV of that paper recommends
+// alpha = 0.61 for the unpolarized 3D HEG; this is the default used here.
+class BOWFunctional : public Functional {
+public:
+    explicit BOWFunctional(double alpha = 0.61)
+        : alpha_(std::max(alpha, 1.0e-8)) {}
+
+    double alpha() const { return alpha_; }
+
+    std::string name() const override {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "BOW(alpha=%.3f)", alpha_);
+        return std::string(buf);
+    }
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+    double kernel(double ni, double nj) const override {
+        return bow_kernel(ni * nj, alpha_);
+    }
+    double kernel_grad(double ni, double nj) const override {
+        return nj * bow_kernel_dx(ni * nj, alpha_);
+    }
+
+protected:
+    static double bow_kernel(double x, double alpha) {
+        const double xc = std::clamp(x, 0.0, 1.0);
+        return std::pow(xc, alpha) - alpha * xc + alpha
+             - alpha * std::pow(std::max(1.0 - xc, 0.0), 1.0 / alpha);
+    }
+    static double bow_kernel_dx(double x, double alpha) {
+        const double eps = 1.0e-12;
+        const double xc = std::clamp(x, eps, 1.0 - eps);
+        return alpha * std::pow(xc, alpha - 1.0) - alpha
+             + std::pow(1.0 - xc, 1.0 / alpha - 1.0);
+    }
+
+private:
+    double alpha_;
+};
+
+// Particle-hole symmetrized BOW kernel requested as "SymBow": average the
+// original BOW pair kernel with the complementary BOW expression evaluated
+// after the occupation-hole replacement n -> 1 - n in both arguments,
+//
+//     K_SymBow(n_i,n_j) = 1/2 [K_BOW(n_i,n_j)
+//                            + 1 - K_BOW(1-n_i,1-n_j)].
+//
+// The complementary form keeps the HF endpoint limits K(0,*) = 0 and
+// K(1,1) = 1 while making the pair kernel particle-hole symmetric.
+class SymBOWFunctional : public BOWFunctional {
+public:
+    explicit SymBOWFunctional(double alpha = 0.61) : BOWFunctional(alpha) {}
+
+    std::string name() const override {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "SymBow(alpha=%.3f)", alpha());
+        return std::string(buf);
+    }
+    double kernel(double ni, double nj) const override {
+        const double holes_i = 1.0 - ni;
+        const double holes_j = 1.0 - nj;
+        return 0.5 * (bow_kernel(ni * nj, alpha())
+                    + 1.0 - bow_kernel(holes_i * holes_j, alpha()));
+    }
+    double kernel_grad(double ni, double nj) const override {
+        const double holes_i = 1.0 - ni;
+        const double holes_j = 1.0 - nj;
+        const double particle_grad = nj * bow_kernel_dx(ni * nj, alpha());
+        const double hole_grad = holes_j * bow_kernel_dx(holes_i * holes_j, alpha());
+        return 0.5 * (particle_grad + hole_grad);
+    }
+};
+
 // BBC1 (Gritsenko, Pernal, Baerends 2005).  In a plane-wave basis it reduces
 // to using the Mueller kernel everywhere except that pairs of "weakly
 // occupied" orbitals (n_i, n_j < 1/2 in the paramagnetic case) get a sign
@@ -573,9 +661,17 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     // Legacy label ``CHF`` maps to CHF (corrected Hartree–Fock kernel).
     if (key == "CHF" || key == "CHF") return std::make_unique<CHFFunctional>();
     if (key == "Power")   return std::make_unique<PowerFunctional>(alpha);
+    if (key == "BOW")     return std::make_unique<BOWFunctional>();
+    if (key == "SymBow")  return std::make_unique<SymBOWFunctional>();
     if (key == "BBC1")    return std::make_unique<BBC1Functional>();
     if (key == "BBC3")   return std::make_unique<BBC3Functional>();
     if (key == "GEO")     return std::make_unique<GEOFunctional>();
+    if (key.rfind("BOW@", 0) == 0) {
+        return std::make_unique<BOWFunctional>(std::stod(key.substr(4)));
+    }
+    if (key.rfind("SymBow@", 0) == 0) {
+        return std::make_unique<SymBOWFunctional>(std::stod(key.substr(7)));
+    }
     // OptGeo@a;b;c — three angles (commas reserved in --funcs).
     if (key.rfind("OptGeo@", 0) == 0) {
         const std::string rest = key.substr(7);
