@@ -60,7 +60,8 @@ void print_help() {
         "  --rs <list>          comma-separated rs values\n"
         "  --funcs <list>       **required** comma-separated functionals\n"
         "                       (HF, Mueller, GU, CGA, CHF, BBC1, BBC3, GEO,\n"
-        "                        OptGeo@<a>;<b>;<c>, HybOpt@lambda;alpha, Power@<alpha>, Beta@<beta>)\n"
+        "                        OptGeo@<a>;<b>;<c>, HybOpt@lambda;alpha, Power@<alpha>,\n"
+        "                        Beta@<beta>, BOW or BOW@alpha, SymBow or SymBow@alpha)\n"
         "                       OptGeo: GEO-style three channels; three angles (two ';').\n"
         "                       HybOpt: (1-lambda) HF + lambda Power(alpha); two floats (one ';').\n"
         "                       Shell: quote keys that contain ';' (e.g. --funcs 'HybOpt@0.4;0.56').\n"
@@ -126,6 +127,14 @@ std::unique_ptr<Functional> make(const std::string& key) {
     if (key.rfind("Beta@", 0) == 0) {
         double beta = std::stod(key.substr(5));
         return std::make_unique<BetaFunctional>(beta);
+    }
+    if (key.rfind("BOW@", 0) == 0) {
+        double alpha = std::stod(key.substr(4));
+        return std::make_unique<BOWFunctional>(alpha);
+    }
+    if (key.rfind("SymBow@", 0) == 0) {
+        double alpha = std::stod(key.substr(7));
+        return std::make_unique<SymBOWFunctional>(alpha);
     }
     if (key.rfind("OptGeo@", 0) == 0 || key.rfind("HybOpt@", 0) == 0
         || key.rfind("OptGM@", 0) == 0) {

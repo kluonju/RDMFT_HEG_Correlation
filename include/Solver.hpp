@@ -503,6 +503,7 @@ solve_rdmft(double rs,
     const OptGeoFunctional* optgeo    = dynamic_cast<const OptGeoFunctional*>(&F);
     const HybOptFunctional* hybopt = dynamic_cast<const HybOptFunctional*>(&F);
     const BBC3Functional*   bbc3      = dynamic_cast<const BBC3Functional*>(&F);
+    const BOWFunctional*    bow       = dynamic_cast<const BOWFunctional*>(&F);
 
     double alpha = 1.0;
     if (pf)        alpha = pf->alpha();
@@ -524,7 +525,7 @@ solve_rdmft(double rs,
     // hybopt / BBC3 escape the trivial HF-step fixed point.
     const bool needs_multistart = additive || (geo != nullptr)
                                   || (optgeo != nullptr) || (hybopt != nullptr)
-                                  || (bbc3 != nullptr);
+                                  || (bbc3 != nullptr) || (bow != nullptr);
     const bool uniform_init = opt.init_uniform_n.has_value();
     const std::vector<std::pair<bool, double>> starts = uniform_init
         ? std::vector<std::pair<bool, double>>{{true, 0.0}}
@@ -691,26 +692,81 @@ solve_rdmft(double rs,
             n_target = update_occupations_additive(
                 mu, U_HF, U_g, g, invert_dg, el_scale);
         } else {
-            // Generic projected-gradient with bisection on mu.
+            // Generic projected-gradient descent with a conservative Armijo
+            // backtracking line search.  For each trial step length we bisect
+            // the Lagrange multiplier mu so the projected/clamped update obeys
+            // the density constraint before the energy decrease is tested.
             auto eps = EnergyEvaluator::pseudo_energy(n, g, W, F);
-            const double step = 0.10;
+            const double E0 = EnergyEvaluator::kinetic_per_volume(n, g)
+                            + EnergyEvaluator::xc_per_volume(n, g, W, F);
+            const double c_armijo = 1.0e-4;
+            const double shrink = 0.5;
+            const double min_step = 1.0e-8;
 
-            auto pgd_at = [&](double m) {
+            auto pgd_at = [&](double step, double m) {
                 std::vector<double> n_try(g.n(), 0.0);
                 for (std::size_t i = 0; i < g.n(); ++i) {
                     n_try[i] = std::clamp(n[i] - step * (eps[i] - m), 0.0, 1.0);
                 }
                 return n_try;
             };
-            double lo = opt.mu_lo, hi = opt.mu_hi;
-            for (int b = 0; b < opt.bisect_iter; ++b) {
-                double m = 0.5 * (lo + hi);
-                auto n_try = pgd_at(m);
-                if (density_of(n_try) > rho_target) hi = m;
-                else                                 lo = m;
+            auto project_for_step = [&](double step, double& mu_step) {
+                double lo = opt.mu_lo, hi = opt.mu_hi;
+                for (int b = 0; b < opt.bisect_iter; ++b) {
+                    const double m = 0.5 * (lo + hi);
+                    auto n_try = pgd_at(step, m);
+                    if (density_of(n_try) > rho_target) hi = m;
+                    else                                 lo = m;
+                }
+                mu_step = 0.5 * (lo + hi);
+                return pgd_at(step, mu_step);
+            };
+            auto directional_derivative = [&](const std::vector<double>& n_try) {
+                constexpr double pi = M_PI;
+                double gd = 0.0;
+                for (std::size_t i = 0; i < g.n(); ++i) {
+                    const double ki = g.k[i];
+                    const double pref = g.w[i] * ki * ki / (pi * pi);
+                    gd += pref * eps[i] * (n_try[i] - n[i]);
+                }
+                return gd;
+            };
+
+            double step = 1.0;
+            double best_E = std::numeric_limits<double>::infinity();
+            std::vector<double> best_n = n;
+            double best_mu = mu;
+            bool accepted = false;
+            while (step >= min_step) {
+                double trial_mu = mu;
+                auto trial = project_for_step(step, trial_mu);
+                const double E_trial = EnergyEvaluator::kinetic_per_volume(trial, g)
+                                     + EnergyEvaluator::xc_per_volume(trial, g, W, F);
+                const double gd = directional_derivative(trial);
+                const double armijo_rhs = E0 + c_armijo * std::min(gd, 0.0);
+                if (E_trial < best_E) {
+                    best_E = E_trial;
+                    best_n = trial;
+                    best_mu = trial_mu;
+                }
+                if (E_trial <= armijo_rhs) {
+                    n_target = std::move(trial);
+                    mu = trial_mu;
+                    accepted = true;
+                    break;
+                }
+                step *= shrink;
             }
-            mu = 0.5 * (lo + hi);
-            n_target = pgd_at(mu);
+            if (!accepted) {
+                if (best_E < E0) {
+                    n_target = std::move(best_n);
+                    mu = best_mu;
+                } else {
+                    // No downhill step survived backtracking; stay put rather
+                    // than taking an energy-increasing PGD step.
+                    n_target = n;
+                }
+            }
         }
 
         double dn_max = 0.0;
