@@ -9,6 +9,7 @@
 #   make geo        -- (re)compute only the GEO functional into data/GEO.tsv
 #   make optgeo     -- (re)compute optGeo (angles from data/log optimization)
 #   make plot       -- all figures: correlation_energy, nk, nk_optgeo, nk_hybopt
+#   make plot-gz    -- figures/nk_gz.png (Gori-Giorgi/Ziesche n(k,rs), paper Fig. 6)
 #   make nk-data     -- export n(k) TSVs under data/nk (same funcs as correlation figure)
 #   make plot-nk     -- figures/nk.png (only r_s that exist under data/nk; --rs auto)
 #   make plot-nk-optgeo -- figures/nk_optgeo.png (optGeo n(k) overlay only)
@@ -34,6 +35,7 @@ SRCS     := src/main.cpp src/MomentumDistributionGZ.cpp
 TARGET   := $(BIN_DIR)/rdmft_heg
 TEST_BIN := $(BIN_DIR)/test_hf_exchange
 TEST_GZ_BIN := $(BIN_DIR)/test_gz_momentum
+DUMP_GZ_BIN := $(BIN_DIR)/dump_gz_grid
 
 HEADERS := $(wildcard include/*.hpp)
 
@@ -50,9 +52,9 @@ FUNCS := Mueller,CGA,CHF,OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545
 NK_DIR := data/nk
 NK_FUNCS := $(FUNCS)
 
-.PHONY: all run rerun geo optgeo hybopt plot nk-data plot-nk plot-nk-optgeo plot-nk-hybopt test clean clean-data
+.PHONY: all run rerun geo optgeo hybopt plot plot-gz nk-data plot-nk plot-nk-optgeo plot-nk-hybopt test clean clean-data
 
-all: $(TARGET) $(TEST_BIN) $(TEST_GZ_BIN)
+all: $(TARGET) $(TEST_BIN) $(TEST_GZ_BIN) $(DUMP_GZ_BIN)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
@@ -65,6 +67,9 @@ $(TEST_BIN): tests/test_hf_exchange.cpp $(HEADERS) | $(BIN_DIR)
 
 $(TEST_GZ_BIN): tests/test_gz_momentum.cpp src/MomentumDistributionGZ.cpp $(HEADERS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_gz_momentum.cpp src/MomentumDistributionGZ.cpp -o $@
+
+$(DUMP_GZ_BIN): tools/dump_gz_grid.cpp src/MomentumDistributionGZ.cpp $(HEADERS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tools/dump_gz_grid.cpp src/MomentumDistributionGZ.cpp -o $@
 
 # Incremental sweep: skip functionals whose data/<name>.tsv already exists.
 # Adding a new functional therefore only runs that functional, leaving the
@@ -151,7 +156,15 @@ plot-nk-hybopt:
 	python3 scripts/plot_nk_hybopt.py --dir $(NK_DIR) --rs auto \
 		--out figures/nk_hybopt.png
 
-test: $(TEST_BIN) $(TEST_GZ_BIN)
+# Reproduce Fig. 6 (upper panel) of Gori-Giorgi/Ziesche
+# PRB 66, 235116 (2002) from the parametrization in
+# src/MomentumDistributionGZ.cpp.  No --funcs / RDMFT solve needed.
+plot-gz: $(DUMP_GZ_BIN)
+	mkdir -p figures
+	python3 scripts/plot_gz.py --rs 1,2,3,5,7,10 \
+		--bin $(DUMP_GZ_BIN) --out figures/nk_gz.png
+
+test: $(TEST_BIN) $(TEST_GZ_BIN) $(DUMP_GZ_BIN)
 	./$(TEST_BIN)
 	./$(TEST_GZ_BIN)
 

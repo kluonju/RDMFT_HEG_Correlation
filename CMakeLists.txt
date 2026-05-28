@@ -37,3 +37,10 @@ add_executable(test_gz_momentum
     src/MomentumDistributionGZ.cpp
 )
 add_test(NAME gz_momentum COMMAND test_gz_momentum)
+
+# Helper binary used by scripts/plot_gz.py to render the
+# Gori-Giorgi/Ziesche n(k, rs) parametrization (paper Fig. 6).
+add_executable(dump_gz_grid
+    tools/dump_gz_grid.cpp
+    src/MomentumDistributionGZ.cpp
+)
