@@ -103,7 +103,20 @@ double b_coeff(double rs) {
 }
 
 double a_coeff(double rs) {
-    // Eq. (17) in PRB 66, 235116 (2002).
+    // Eq. (19) of Gori-Giorgi/Ziesche, PRB 66, 235116 (2002).
+    //
+    // BUG FIX (2026-05): the published Eq. (19) has a TYPO --- the final
+    // term of the denominator is printed as `p6 * rs^6`, but the original
+    // FORTRAN reference implementation by Gori-Giorgi (`nk_GZ.f`, archived
+    // verbatim at `tools/reference/nk_GZ.f`, function `apar`) uses
+    // `gg2 * |gg6| * rs^4`, i.e. p6 = -0.01136759 (= -0.0989941 * 0.114831)
+    // multiplied by *rs^4*, not rs^6.  With the rs^6 form the |1-k|ln|1-k|
+    // strength a(rs) collapses much too fast (e.g. a(rs=10) ~ 0.012 instead
+    // of ~0.49), violating the GZ particle-number sum rule of Eq. (3) by
+    // ~35% at rs=10 and producing the n(k, rs=5..10) curves that disagree
+    // with paper Fig. 6.  Switching to rs^4 restores I_2 = 1 to < 0.5% for
+    // all rs <= 12 and reproduces Fig. 6 (lower panel, rs=5 vs TY/QMC) to
+    // visual accuracy.
     const double p1 = -78.8682;
     const double p2 = -0.0989941;
     const double p3 = -68.5997;
@@ -113,7 +126,7 @@ double a_coeff(double rs) {
     const double q = std::pow(rs, 0.25);
     const double s = std::sqrt(rs);
     return (1.0 + p1 * q + p2 * s)
-         / (1.0 + p3 * q + p4 * s + p5 * rs + p6 * std::pow(rs, 6.0));
+         / (1.0 + p3 * q + p4 * s + p5 * rs + p6 * std::pow(rs, 4.0));
 }
 
 double n0(double rs) {
