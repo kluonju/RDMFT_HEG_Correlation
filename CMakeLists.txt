@@ -23,8 +23,17 @@ add_compile_options(-Wall -Wextra -Wpedantic -O3)
 
 include_directories(${PROJECT_SOURCE_DIR}/include)
 
-add_executable(rdmft_heg src/main.cpp)
+add_executable(rdmft_heg
+    src/main.cpp
+    src/MomentumDistributionGZ.cpp
+)
 
 enable_testing()
 add_executable(test_hf_exchange tests/test_hf_exchange.cpp)
 add_test(NAME hf_exchange COMMAND test_hf_exchange)
+
+add_executable(test_gz_momentum
+    tests/test_gz_momentum.cpp
+    src/MomentumDistributionGZ.cpp
+)
+add_test(NAME gz_momentum COMMAND test_gz_momentum)

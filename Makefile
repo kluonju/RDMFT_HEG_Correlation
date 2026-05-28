@@ -30,9 +30,10 @@ endif
 INCLUDES := -Iinclude
 
 BIN_DIR  := build
-SRCS     := src/main.cpp
+SRCS     := src/main.cpp src/MomentumDistributionGZ.cpp
 TARGET   := $(BIN_DIR)/rdmft_heg
 TEST_BIN := $(BIN_DIR)/test_hf_exchange
+TEST_GZ_BIN := $(BIN_DIR)/test_gz_momentum
 
 HEADERS := $(wildcard include/*.hpp)
 
@@ -51,16 +52,19 @@ NK_FUNCS := $(FUNCS)
 
 .PHONY: all run rerun geo optgeo hybopt plot nk-data plot-nk plot-nk-optgeo plot-nk-hybopt test clean clean-data
 
-all: $(TARGET) $(TEST_BIN)
+all: $(TARGET) $(TEST_BIN) $(TEST_GZ_BIN)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
-$(TARGET): src/main.cpp $(HEADERS) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) src/main.cpp -o $@
+$(TARGET): $(SRCS) $(HEADERS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(SRCS) -o $@
 
 $(TEST_BIN): tests/test_hf_exchange.cpp $(HEADERS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_hf_exchange.cpp -o $@
+
+$(TEST_GZ_BIN): tests/test_gz_momentum.cpp src/MomentumDistributionGZ.cpp $(HEADERS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_gz_momentum.cpp src/MomentumDistributionGZ.cpp -o $@
 
 # Incremental sweep: skip functionals whose data/<name>.tsv already exists.
 # Adding a new functional therefore only runs that functional, leaving the
@@ -147,8 +151,9 @@ plot-nk-hybopt:
 	python3 scripts/plot_nk_hybopt.py --dir $(NK_DIR) --rs auto \
 		--out figures/nk_hybopt.png
 
-test: $(TEST_BIN)
+test: $(TEST_BIN) $(TEST_GZ_BIN)
 	./$(TEST_BIN)
+	./$(TEST_GZ_BIN)
 
 clean:
 	rm -rf $(BIN_DIR)
