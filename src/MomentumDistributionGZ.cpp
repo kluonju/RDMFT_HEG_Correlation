@@ -107,7 +107,8 @@ double a_coeff(double rs) {
     //
     // BUG FIX (2026-05): the published Eq. (19) has a TYPO --- the final
     // term of the denominator is printed as `p6 * rs^6`, but the original
-    // FORTRAN reference implementation by Gori-Giorgi (`nk_GZ.f`) uses
+    // FORTRAN reference implementation by Gori-Giorgi (`nk_GZ.f`, archived
+    // verbatim at `tools/reference/nk_GZ.f`, function `apar`) uses
     // `gg2 * |gg6| * rs^4`, i.e. p6 = -0.01136759 (= -0.0989941 * 0.114831)
     // multiplied by *rs^4*, not rs^6.  With the rs^6 form the |1-k|ln|1-k|
     // strength a(rs) collapses much too fast (e.g. a(rs=10) ~ 0.012 instead
