@@ -184,8 +184,19 @@ def rmse_vs_gz(
     return math.sqrt(mse)
 
 
-def aggregate_rmse(per_rs: dict[float, float]) -> float:
-    """Root-mean-square of per-r_s RMSEs.
+def aggregate_rmse(per_rs: dict[float, float], mode: str = "sum") -> float:
+    """Combine per-r_s RMSEs into a scalar training loss.
+
+    mode:
+      ``sum`` (default)   L = sum_i RMSE_i.  This is the loss the NN is
+                          trained to reduce: the *total* deviation across
+                          the r_s sweep against the GZ targets.  Adding new
+                          r_s values proportionally increases L, which is
+                          the natural scaling for "drive every point closer
+                          to the reference".
+      ``rms``             L = sqrt(mean_i RMSE_i^2).  Legacy behaviour:
+                          bounded as r_s values are added but less
+                          informative for ranking weight vectors.
 
     Non-finite entries (inf / NaN) are clamped to ``UNCONV_PENALTY`` so the
     optimizer always sees a finite, monotonic objective; otherwise gradient-
@@ -197,13 +208,57 @@ def aggregate_rmse(per_rs: dict[float, float]) -> float:
     """
     if not per_rs:
         return float("inf")
-    errs: list[float] = []
+    vals: list[float] = []
     for v in per_rs.values():
-        if math.isfinite(v):
-            errs.append(v * v)
-        else:
-            errs.append(UNCONV_PENALTY * UNCONV_PENALTY)
-    return math.sqrt(sum(errs) / len(errs))
+        vals.append(float(v) if math.isfinite(v) else float(UNCONV_PENALTY))
+    if mode == "sum":
+        return float(sum(vals))
+    if mode == "rms":
+        return math.sqrt(sum(v * v for v in vals) / len(vals))
+    raise ValueError(f"unknown aggregate mode: {mode!r}")
+
+
+def tail_rmse_vs_gz(
+    k_m: np.ndarray,
+    n_m: np.ndarray,
+    gz_cache: dict[float, tuple[np.ndarray, np.ndarray]],
+    rs: float,
+    *,
+    kmax: float,
+    nk: int,
+    tail_cutoff: float,
+    tail_power: float,
+) -> float:
+    """k^p-weighted RMSE on the tail region k/k_F > ``tail_cutoff``.
+
+    Encodes the large-k asymptotic constraint n(k) ~ C / k^p (for the UEG
+    the physical tail decays as a power of k; the GZ parametrisation
+    already carries the correct decay).  Adding this term to the per-r_s
+    loss explicitly biases the optimizer toward solutions whose tail
+    matches the reference, since with the default uniform / k^2 weight the
+    tail (where n is small) contributes little to the global RMSE.
+
+    Returns 0.0 if the tail region is empty (e.g. ``tail_cutoff`` >= the
+    grid range), so the term degrades gracefully when k_max is too small
+    to resolve the tail.
+    """
+    if tail_cutoff <= 0.0 or tail_power < 0.0:
+        return 0.0
+    x_gz, n_gz = gz_cache[rs]
+    x = np.linspace(0.0, kmax, nk)
+    mask = x > tail_cutoff
+    if not np.any(mask):
+        return 0.0
+    x_t = x[mask]
+    w = np.power(x_t, tail_power)
+    n_ref = np.interp(x_t, x_gz, n_gz)
+    n_mod = np.interp(x_t, k_m, n_m)
+    diff = n_mod - n_ref
+    denom = float(_trapz(w, x_t))
+    if denom <= 0.0:
+        return 0.0
+    mse = float(_trapz(w * diff * diff, x_t) / denom)
+    return math.sqrt(max(mse, 0.0))
 
 
 # Penalty applied per r_s when SCF didn't converge or n(k) export is missing.

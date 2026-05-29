@@ -44,6 +44,7 @@ from nn_gz_common import (  # noqa: E402
     _trapz,
     aggregate_rmse,
     ensure_gz_targets,
+    tail_rmse_vs_gz,
     format_per_rs,
     load_nk_tsv,
 )
@@ -324,8 +325,25 @@ def gz_rmse(
     work_dir: Path,
     log: Log,
     label: str = "",
+    loss_mode: str = "sum",
+    tail_weight: float = 0.0,
+    tail_power: float = 4.0,
+    tail_cutoff: float = 1.5,
 ) -> tuple[float, dict[float, float]]:
-    """Run SCF and return (RMSE, per-rs RMSE).  Requires ``work_dir/model.json``."""
+    """Run SCF and return (loss, per-rs RMSE).
+
+    Per-r_s loss = main RMSE + ``tail_weight`` * tail RMSE.  The main RMSE
+    uses k^2 (or uniform) weight on the full [0, kmax] grid; the tail RMSE
+    uses k^p weight on k/k_F > tail_cutoff and is added in only when
+    ``tail_weight > 0`` and the tail region is non-empty.
+
+    The combined per-r_s losses are then folded into a scalar via
+    ``aggregate_rmse(per_rs, mode=loss_mode)``.  ``loss_mode='sum'`` (the
+    default) returns sum_i RMSE_i, which is the loss the NN is trained to
+    reduce; ``'rms'`` is the legacy sqrt(mean(...^2)) form.
+
+    Requires ``work_dir/model.json``.
+    """
     run_rdmft_nk(
         exe,
         work_dir,
@@ -372,10 +390,29 @@ def gz_rmse(
                 f"-> penalty {penalized:.6f}"
             )
             continue
-        per_rs[rs] = rmse
+        # Add the optional large-k tail term.  The tail uses a k^p weight
+        # on k/k_F > tail_cutoff; with tail_weight=0 (default) this is a
+        # no-op and the legacy main RMSE is reported.
+        tail_term = 0.0
+        if tail_weight > 0.0:
+            tail_term = tail_rmse_vs_gz(
+                k_m, n_m, gz_cache, rs,
+                kmax=kmax, nk=nk,
+                tail_cutoff=tail_cutoff,
+                tail_power=tail_power,
+            )
+        per_rs[rs] = rmse + tail_weight * tail_term
         conv_s = "ok" if conv is True else ("?" if conv is None else "no")
-        log.detail(f"{prefix}  r_s={rs:g}: RMSE={rmse:.6f}  converged={conv_s}")
-    return aggregate_rmse(per_rs), per_rs
+        if tail_weight > 0.0:
+            log.detail(
+                f"{prefix}  r_s={rs:g}: main={rmse:.6f}  tail(k>{tail_cutoff:g},p={tail_power:g})={tail_term:.6f}"
+                f"  total={per_rs[rs]:.6f}  converged={conv_s}"
+            )
+        else:
+            log.detail(
+                f"{prefix}  r_s={rs:g}: RMSE={rmse:.6f}  converged={conv_s}"
+            )
+    return aggregate_rmse(per_rs, mode=loss_mode), per_rs
 
 
 def main() -> None:
@@ -412,6 +449,36 @@ def main() -> None:
              "(non-separable, 2-input).",
     )
     ap.add_argument("--init-uniform", type=float, default=0.5)
+    ap.add_argument(
+        "--loss",
+        choices=("sum", "rms"),
+        default="sum",
+        help="Aggregation mode for per-r_s RMSEs.  'sum': L = sum_i RMSE_i "
+             "(the NN is trained to reduce the total RMSE across the r_s "
+             "sweep against the GZ targets).  'rms': legacy sqrt(mean RMSE^2).",
+    )
+    ap.add_argument(
+        "--tail-weight",
+        type=float,
+        default=0.5,
+        help="Coefficient for the large-k tail RMSE term added to each "
+             "per-r_s loss.  Set to 0 to disable.  Default 0.5 enforces the "
+             "n(k) ~ C/k^p tail asymptote alongside the main k^2-weighted RMSE.",
+    )
+    ap.add_argument(
+        "--tail-power",
+        type=float,
+        default=4.0,
+        help="Exponent p for the k^p weight in the tail RMSE term "
+             "(physical UEG tail constraint n(k) ~ 1/k^p).",
+    )
+    ap.add_argument(
+        "--tail-cutoff",
+        type=float,
+        default=1.5,
+        help="Tail region begins at k/k_F > tail_cutoff (in the same units "
+             "as the loaded n(k) TSVs, which are normalised by k_F).",
+    )
     ap.add_argument("--no-prescreen", action="store_true")
     ap.add_argument("--uniform-weight", action="store_true", help="Use uniform k weight (default x^2)")
     ap.add_argument(
@@ -454,6 +521,12 @@ def main() -> None:
     log.info(f"  hidden    : {hidden}  ({n_params} parameters)")
     log.info(f"  method    : {args.method}  maxiter={args.maxiter}")
     log.info(f"  weight    : {'k^2' if weight_x2 else 'uniform'}")
+    log.info(f"  loss      : {args.loss}  (per-r_s = main_RMSE + {args.tail_weight:g}*tail_RMSE)")
+    if args.tail_weight > 0.0:
+        log.info(
+            f"  tail      : k/k_F > {args.tail_cutoff:g}  weight=k^{args.tail_power:g}  "
+            "(enforces n(k) ~ C/k^p large-k asymptote)"
+        )
     log.info(f"  init      : {args.init}  init_uniform={args.init_uniform}")
     log.info(f"  main r_s  : {rs_main}")
     log.info(f"  main grid : N={args.N}  kmax={args.kmax}")
@@ -537,12 +610,16 @@ def main() -> None:
                         work_dir=tmp_path,
                         log=log,
                         label=label,
+                        loss_mode=args.loss,
+                        tail_weight=args.tail_weight,
+                        tail_power=args.tail_power,
+                        tail_cutoff=args.tail_cutoff,
                     )
                 except (RuntimeError, FileNotFoundError) as e:
                     log.info(f"  {label}: FAILED ({time.time() - t_cand:.1f}s): {e}")
                     continue
                 log.info(
-                    f"  {label}: RMSE={rmse:.6f}  ({time.time() - t_cand:.1f}s)"
+                    f"  {label}: loss={rmse:.6f} ({args.loss}) ({time.time() - t_cand:.1f}s)"
                 )
                 log.detail(f"    {format_per_rs(per)}")
                 if rmse < best_rmse:
@@ -588,6 +665,10 @@ def main() -> None:
                     work_dir=tmp_path,
                     log=log,
                     label=f"eval{n_eval[0]}",
+                    loss_mode=args.loss,
+                    tail_weight=args.tail_weight,
+                    tail_power=args.tail_power,
+                    tail_cutoff=args.tail_cutoff,
                 )
             except (RuntimeError, FileNotFoundError) as e:
                 rmse = float("inf")
@@ -598,7 +679,7 @@ def main() -> None:
             if rmse < best_rmse_main[0]:
                 best_rmse_main[0] = rmse
                 improved = "  ** new best **"
-            log.info(f"  RMSE={rmse:.6f}  ({dt:.1f}s){improved}")
+            log.info(f"  loss={rmse:.6f} ({args.loss})  ({dt:.1f}s){improved}")
             log.detail(f"    {format_per_rs(per)}")
             return rmse
 
@@ -611,7 +692,7 @@ def main() -> None:
     log.info("-" * 60)
     log.info(f"Main optimization ({args.method}, maxiter={args.maxiter})")
     log.info("-" * 60)
-    log.info(f"  starting RMSE target from prescreen: {best_rmse:.6f}")
+    log.info(f"  starting loss target from prescreen: {best_rmse:.6f}")
     minimize_opts: dict[str, Any] = {"maxiter": args.maxiter}
     if not args.quiet:
         minimize_opts["disp"] = True
@@ -634,7 +715,7 @@ def main() -> None:
     log.info(f"  scipy success : {res.success}")
     log.info(f"  scipy message : {res.message}")
     log.info(f"  nfev          : {res.nfev}")
-    log.info(f"  final RMSE    : {res.fun:.6f}")
+    log.info(f"  final loss    : {res.fun:.6f}  (mode={args.loss}, tail_w={args.tail_weight:g})")
     log.info(f"  model written : {model_path}")
 
     # Per-r_s breakdown on final parameters
@@ -652,8 +733,12 @@ def main() -> None:
         work_dir=args.out_dir,
         log=log,
         label="final",
+        loss_mode=args.loss,
+        tail_weight=args.tail_weight,
+        tail_power=args.tail_power,
+        tail_cutoff=args.tail_cutoff,
     )
-    log.info(f"  aggregate RMSE={final_rmse:.6f}")
+    log.info(f"  aggregate loss={final_rmse:.6f}  (mode={args.loss})")
     log.detail(f"    {format_per_rs(final_per)}")
 
     nk_dir = args.out_dir / "nk"
