@@ -58,7 +58,7 @@ NN_DATA_DIR := build/nn_data
 NN_HIDDEN ?= 4,4
 
 .PHONY: all run rerun geo optgeo hybopt plot plot-gz nk-data plot-nk plot-nk-optgeo plot-nk-hybopt \
-        prepare-nn-data optimize-nn-gz plot-nk-nn test clean clean-data
+        prepare-nn-data optimize-nn-gz optimize-nn-pair-gz plot-nk-nn test clean clean-data
 
 all: $(TARGET) $(TEST_BIN) $(TEST_GZ_BIN) $(TEST_NN_BIN) $(DUMP_GZ_BIN)
 
@@ -178,10 +178,22 @@ prepare-nn-data: $(TARGET) $(DUMP_GZ_BIN)
 	python3 scripts/prepare_nn_gz_data.py --dump-gz $(DUMP_GZ_BIN) --exe $(TARGET) \
 		--data-dir $(NN_DATA_DIR) --power-sweep
 
-# Fit separable NN kernel f(n) vs GZ n(k) (slow; SciPy required).
+# Fit separable NN kernel f(n) vs GZ n(k) (slow; SciPy required).  The
+# objective is sqrt(mean_i E_i^2) with E_i = int_0^{kmax * k_F} |n - n_ref| dk
+# (default kmax = 3 -> integration up to 3 k_F).
 optimize-nn-gz: $(TARGET) prepare-nn-data
 	python3 scripts/optimize_nn_gz.py --exe $(TARGET) --dump-gz $(DUMP_GZ_BIN) \
 		--data-dir $(NN_DATA_DIR) --out-dir $(NN_BEST_DIR) --hidden $(NN_HIDDEN)
+
+# Fit non-separable pair kernel K(n_i, n_j) vs GZ n(k).  Same L1-RMSE
+# objective, but the NN parameterises K directly with a sign-free 2-input
+# MLP (NNPairFunctional).  Slower than the separable fit because
+# is_factorized()=false routes the SCF through the generic projected-
+# gradient branch.
+optimize-nn-pair-gz: $(TARGET) prepare-nn-data
+	python3 scripts/optimize_nn_gz.py --exe $(TARGET) --dump-gz $(DUMP_GZ_BIN) \
+		--data-dir $(NN_DATA_DIR) --out-dir $(NN_BEST_DIR)/pair --hidden $(NN_HIDDEN) \
+		--kernel-type pair
 
 plot-nk-nn: $(DUMP_GZ_BIN)
 	mkdir -p figures
