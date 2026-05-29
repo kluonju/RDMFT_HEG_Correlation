@@ -715,9 +715,22 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     // The Beta functional needs an explicit exponent; callers should use
     // make_functional("Beta", beta) explicitly (alpha is reused as beta).
     if (key == "Beta")    return std::make_unique<BetaFunctional>(alpha);
-    // NN@path/to/model.json — separable kernel with f(n) from a JSON MLP.
+    // NN@path/to/model.json — auto-detect kernel_type (separable or pair).
+    // The legacy default is "separable" so existing model.json files keep
+    // loading as NNFunctional (factorized f(n)).  Setting "kernel_type":
+    // "pair" in the JSON root selects NNPairFunctional (2D coupling NN).
     if (key.rfind("NN@", 0) == 0) {
         const std::string path = key.substr(3);
+        if (!path.empty()) {
+            return load_nn_functional(path);
+        }
+        return nullptr;
+    }
+    // NNPair@path/to/model.json — explicit non-separable two-input pair NN
+    // kernel K(n_i, n_j) = sqrt(n_i n_j) * softplus(MLP([n_i+n_j, n_i n_j])).
+    // Equivalent to ``NN@`` with ``"kernel_type": "pair"`` in the JSON.
+    if (key.rfind("NNPair@", 0) == 0) {
+        const std::string path = key.substr(7);
         if (!path.empty()) {
             return load_nn_functional(path);
         }

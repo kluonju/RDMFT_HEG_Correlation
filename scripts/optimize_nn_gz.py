@@ -82,9 +82,25 @@ def eval_f(model: dict, n: float | np.ndarray) -> np.ndarray:
     return (n_arr.reshape(-1) * softplus(raw)).reshape(n_arr.shape)
 
 
-def build_model(hidden: list[int], weights: list[np.ndarray] | None = None) -> dict:
-    """Construct model dict with kernels [1->h0->...->1]."""
-    sizes = [1] + hidden + [1]
+def build_model(
+    hidden: list[int],
+    weights: list[np.ndarray] | None = None,
+    *,
+    kernel_type: str = "separable",
+) -> dict:
+    """Construct an MLP model dict.
+
+    kernel_type:
+      ``separable``  - input dim 1, kernel K(n_i, n_j) = f(n_i) f(n_j) with
+                       f(n) = n * softplus(MLP(n)).  Loaded by NNFunctional.
+      ``pair``       - input dim 2, kernel K(n_i, n_j) =
+                       sqrt(n_i n_j) * softplus(MLP([n_i+n_j, n_i n_j])).
+                       Loaded by NNPairFunctional (non-separable).
+    """
+    if kernel_type not in ("separable", "pair"):
+        raise ValueError(f"unknown kernel_type: {kernel_type}")
+    in0 = 1 if kernel_type == "separable" else 2
+    sizes = [in0] + hidden + [1]
     kernels: list[dict[str, Any]] = []
     rng = np.random.default_rng(0)
     for ell in range(len(sizes) - 1):
@@ -104,11 +120,55 @@ def build_model(hidden: list[int], weights: list[np.ndarray] | None = None) -> d
         )
     return {
         "version": 1,
-        "name": "NN",
+        "kernel_type": kernel_type,
+        "name": "NN" if kernel_type == "separable" else "NNPair",
         "hidden": hidden,
         "kernels": kernels,
         "out_bias": 0.0,
     }
+
+
+def init_pair_model(
+    target: str = "hf",
+    hidden: list[int] | None = None,
+    alpha: float = 1.0,
+) -> dict:
+    """Initialize a 2-input pair MLP near a known kernel for stable warm-start.
+
+    With K(a, b) = sqrt(a b) * softplus(raw), choosing
+    softplus(raw) = (a b)^{(alpha - 1/2)} gives K(a, b) = (a b)^alpha.  We fit
+    raw to that on a few representative pair anchors, leaving small random
+    hidden weights so the optimizer can escape if needed.
+
+    target:
+      ``hf``      - alpha = 1   (Hartree-Fock pair kernel a*b)
+      ``mueller`` - alpha = 1/2 (sqrt(a*b))
+      ``power``   - alpha given explicitly via ``alpha``
+    """
+    if hidden is None:
+        hidden = [8, 8]
+    model = build_model(hidden, kernel_type="pair")
+    if target == "hf":
+        a = 1.0
+    elif target == "mueller":
+        a = 0.5
+    elif target == "power":
+        a = float(alpha)
+    else:
+        raise ValueError(f"unknown pair init target: {target}")
+    anchors = np.array(
+        [(0.2, 0.2), (0.5, 0.5), (0.8, 0.8), (0.4, 0.7), (0.1, 0.9)], dtype=float
+    )
+    p = anchors[:, 0] * anchors[:, 1]
+    sp_target = np.power(np.clip(p, 1e-8, None), a - 0.5)
+    raw_tgt = np.log(np.expm1(np.clip(sp_target, 1e-8, 50.0)))
+    model["out_bias"] = float(np.mean(raw_tgt))
+    rng = np.random.default_rng(123)
+    for layer in model["kernels"][:-1]:
+        nin = layer["in"]
+        nout = layer["out"]
+        layer["W"] = (rng.normal(scale=0.05, size=(nout, nin))).tolist()
+    return model
 
 
 def init_power_model(alpha: float = 0.55, hidden: list[int] | None = None) -> dict:
@@ -343,6 +403,14 @@ def main() -> None:
     ap.add_argument("--maxiter", type=int, default=80)
     ap.add_argument("--out-dir", type=Path, default=REPO_ROOT / "build" / "nn_best")
     ap.add_argument("--init", choices=("power", "mueller", "random"), default="power")
+    ap.add_argument(
+        "--kernel-type",
+        choices=("separable", "pair"),
+        default="separable",
+        help="separable: K(n_i,n_j)=f(n_i)f(n_j) with f from a 1-input MLP. "
+             "pair: K(n_i,n_j)=sqrt(n_i n_j)*softplus(MLP([n_i+n_j, n_i n_j])) "
+             "(non-separable, 2-input).",
+    )
     ap.add_argument("--init-uniform", type=float, default=0.5)
     ap.add_argument("--no-prescreen", action="store_true")
     ap.add_argument("--uniform-weight", action="store_true", help="Use uniform k weight (default x^2)")
@@ -369,18 +437,20 @@ def main() -> None:
 
     log = Log(quiet=args.quiet, verbose=args.verbose)
     weight_x2 = not args.uniform_weight
-    sizes = [1] + hidden + [1]
+    in0 = 1 if args.kernel_type == "separable" else 2
+    sizes = [in0] + hidden + [1]
     n_params = sum(
         sizes[i] * sizes[i + 1] + sizes[i + 1] for i in range(len(sizes) - 1)
     ) + 1
 
     log.info("=" * 60)
-    log.info("NN separable kernel optimization vs GZ n(k)")
+    log.info(f"NN {args.kernel_type} kernel optimization vs GZ n(k)")
     log.info("=" * 60)
     log.info(f"  exe       : {args.exe.resolve()}")
     log.info(f"  data_dir  : {args.data_dir.resolve()}")
     log.info(f"  dump_gz   : {args.dump_gz.resolve()}")
     log.info(f"  out_dir   : {args.out_dir.resolve()}")
+    log.info(f"  kernel    : {args.kernel_type} (input dim {in0})")
     log.info(f"  hidden    : {hidden}  ({n_params} parameters)")
     log.info(f"  method    : {args.method}  maxiter={args.maxiter}")
     log.info(f"  weight    : {'k^2' if weight_x2 else 'uniform'}")
@@ -406,16 +476,38 @@ def main() -> None:
         log.info(f"  power_sweep best alpha from cache: {sweep_alpha:g}")
 
     candidates: list[tuple[str, dict]] = []
-    if args.init == "power":
-        a0 = sweep_alpha if sweep_alpha is not None else 0.55
-        candidates.append((f"power{a0:g}", init_power_model(a0, hidden)))
-        if sweep_alpha is None or abs(a0 - 0.55) > 1e-6:
-            candidates.append(("power055", init_power_model(0.55, hidden)))
-    elif args.init == "mueller":
-        candidates.append(("mueller", init_power_model(0.5, hidden)))
+    if args.kernel_type == "pair":
+        # Pair-mode warm-starts mirror the separable family but evaluate
+        # K(a, b) = (a*b)^alpha at the chosen alpha; the trainer is then free
+        # to deform the kernel into a non-factorizable shape.
+        if args.init == "power":
+            a0 = sweep_alpha if sweep_alpha is not None else 0.55
+            candidates.append(
+                (f"pair_power{a0:g}", init_pair_model("power", hidden, a0))
+            )
+            if sweep_alpha is None or abs(a0 - 0.55) > 1e-6:
+                candidates.append(
+                    ("pair_power055", init_pair_model("power", hidden, 0.55))
+                )
+        elif args.init == "mueller":
+            candidates.append(("pair_mueller", init_pair_model("mueller", hidden)))
+        else:
+            candidates.append(("pair_random", build_model(hidden, kernel_type="pair")))
+        # HF-like baseline (alpha = 1) so the optimizer always has at least
+        # one converged-everywhere starting point on the standard r_s grid.
+        candidates.append(("pair_hf", init_pair_model("hf", hidden)))
+        candidates.append(("pair_power058", init_pair_model("power", hidden, 0.58)))
     else:
-        candidates.append(("random", build_model(hidden)))
-    candidates.append(("power058", init_power_model(0.58, hidden)))
+        if args.init == "power":
+            a0 = sweep_alpha if sweep_alpha is not None else 0.55
+            candidates.append((f"power{a0:g}", init_power_model(a0, hidden)))
+            if sweep_alpha is None or abs(a0 - 0.55) > 1e-6:
+                candidates.append(("power055", init_power_model(0.55, hidden)))
+        elif args.init == "mueller":
+            candidates.append(("mueller", init_power_model(0.5, hidden)))
+        else:
+            candidates.append(("random", build_model(hidden)))
+        candidates.append(("power058", init_power_model(0.58, hidden)))
 
     best_model = candidates[0][1]
     best_rmse = float("inf")
