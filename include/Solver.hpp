@@ -619,28 +619,49 @@ solve_rdmft(double rs,
         return U;
     };
 
-    auto bisect_mu_factorized = [&](const std::vector<double>& U) {
-        // density(mu) is monotonically *increasing* in mu (larger mu = more
-        // states filled), so if rho > target we shrink the upper bound.
-        double lo = opt.mu_lo, hi = opt.mu_hi;
+    // Bisection on mu with the given occupation update functor.
+    // density(mu) is monotonically increasing in mu, so a well-formed
+    // bracket has rho(lo) <= rho_target <= rho(hi).  If the requested
+    // bracket [opt.mu_lo, opt.mu_hi] is too tight (e.g. ill-conditioned NN
+    // kernels at large r_s push mu well outside [-50, 50]) we expand it
+    // geometrically (up to ``max_expand`` doublings of the span) before
+    // falling back to the saturated boundary.  This avoids manual
+    // --mu-lo/--mu-hi tuning per functional / r_s and lets the optimizer
+    // make progress even on bad NN weights.
+    auto adaptive_bisect = [&](auto update_n) {
+        double lo = opt.mu_lo;
+        double hi = opt.mu_hi;
+        const int max_expand = 16;
+        double rho_lo = density_of(update_n(lo));
+        double rho_hi = density_of(update_n(hi));
+        for (int e = 0; e < max_expand; ++e) {
+            if (rho_lo <= rho_target && rho_hi >= rho_target) break;
+            const double span = std::max(hi - lo, 1.0);
+            if (rho_lo > rho_target) {
+                lo -= span;
+                rho_lo = density_of(update_n(lo));
+            }
+            if (rho_hi < rho_target) {
+                hi += span;
+                rho_hi = density_of(update_n(hi));
+            }
+        }
         for (int b = 0; b < opt.bisect_iter; ++b) {
-            double m = 0.5 * (lo + hi);
-            auto n_try = update_occupations_power(alpha, m, U, g);
-            if (density_of(n_try) > rho_target) hi = m;
-            else                                 lo = m;
+            const double m = 0.5 * (lo + hi);
+            if (density_of(update_n(m)) > rho_target) hi = m;
+            else                                       lo = m;
         }
         return 0.5 * (lo + hi);
     };
 
+    auto bisect_mu_factorized = [&](const std::vector<double>& U) {
+        return adaptive_bisect(
+            [&](double m) { return update_occupations_power(alpha, m, U, g); });
+    };
+
     auto bisect_mu_generic_factorized = [&](const std::vector<double>& U) {
-        double lo = opt.mu_lo, hi = opt.mu_hi;
-        for (int b = 0; b < opt.bisect_iter; ++b) {
-            const double m = 0.5 * (lo + hi);
-            auto n_try = update_occupations_factorized(m, U, g, F);
-            if (density_of(n_try) > rho_target) hi = m;
-            else                                 lo = m;
-        }
-        return 0.5 * (lo + hi);
+        return adaptive_bisect(
+            [&](double m) { return update_occupations_factorized(m, U, g, F); });
     };
 
     // Pick the appropriate hole inverter for additive kernels.
@@ -676,17 +697,9 @@ solve_rdmft(double rs,
             auto U2 = compute_U_with(n, g, W, f_pow);
             const double c1 = 1.0 - lam;
             const double c2 = lam;
-            auto bisect_mu_hybopt = [&]() {
-                double lo = opt.mu_lo, hi = opt.mu_hi;
-                for (int b = 0; b < opt.bisect_iter; ++b) {
-                    const double m = 0.5 * (lo + hi);
-                    auto n_try = update_occupations_hf_power_mix(m, U1, U2, g, c1, c2, al);
-                    if (density_of(n_try) > rho_target) hi = m;
-                    else                                 lo = m;
-                }
-                return 0.5 * (lo + hi);
-            };
-            mu = bisect_mu_hybopt();
+            mu = adaptive_bisect([&](double m) {
+                return update_occupations_hf_power_mix(m, U1, U2, g, c1, c2, al);
+            });
             n_target = update_occupations_hf_power_mix(mu, U1, U2, g, c1, c2, al);
         } else if (geo || optgeo) {
             // Multi-power GEO / optGeo kernel: build U1, U2, U3 with f1(n) = n,
@@ -703,19 +716,11 @@ solve_rdmft(double rs,
             const double c2 = geo ? 0.25 : optgeo->w2();
             const double c3 = geo ? 0.50 : optgeo->w3();
 
-            auto bisect_mu_geo_family = [&]() {
-                double lo = opt.mu_lo, hi = opt.mu_hi;
-                for (int b = 0; b < opt.bisect_iter; ++b) {
-                    double m = 0.5 * (lo + hi);
-                    auto n_try = geo
-                        ? update_occupations_geo(m, U1, U2, U3, g)
-                        : update_occupations_optGM(m, U1, U2, U3, g, c1, c2, c3);
-                    if (density_of(n_try) > rho_target) hi = m;
-                    else                                 lo = m;
-                }
-                return 0.5 * (lo + hi);
-            };
-            mu = bisect_mu_geo_family();
+            mu = adaptive_bisect([&](double m) {
+                return geo
+                    ? update_occupations_geo(m, U1, U2, U3, g)
+                    : update_occupations_optGM(m, U1, U2, U3, g, c1, c2, c3);
+            });
             n_target = geo
                 ? update_occupations_geo(mu, U1, U2, U3, g)
                 : update_occupations_optGM(mu, U1, U2, U3, g, c1, c2, c3);
@@ -743,18 +748,10 @@ solve_rdmft(double rs,
             auto U_HF = compute_U_with(n, g, W, identity_id);
             auto U_g  = compute_U_with(n, g, W, g_of);
 
-            auto bisect_mu_additive = [&]() {
-                double lo = opt.mu_lo, hi = opt.mu_hi;
-                for (int b = 0; b < opt.bisect_iter; ++b) {
-                    double m = 0.5 * (lo + hi);
-                    auto n_try = update_occupations_additive(
-                        m, U_HF, U_g, g, invert_dg, el_scale);
-                    if (density_of(n_try) > rho_target) hi = m;
-                    else                                 lo = m;
-                }
-                return 0.5 * (lo + hi);
-            };
-            mu = bisect_mu_additive();
+            mu = adaptive_bisect([&](double m) {
+                return update_occupations_additive(
+                    m, U_HF, U_g, g, invert_dg, el_scale);
+            });
             n_target = update_occupations_additive(
                 mu, U_HF, U_g, g, invert_dg, el_scale);
         } else {

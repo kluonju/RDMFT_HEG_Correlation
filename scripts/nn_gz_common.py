@@ -185,10 +185,32 @@ def rmse_vs_gz(
 
 
 def aggregate_rmse(per_rs: dict[float, float]) -> float:
-    errs = [v * v for v in per_rs.values() if math.isfinite(v)]
-    if len(errs) != len(per_rs):
+    """Root-mean-square of per-r_s RMSEs.
+
+    Non-finite entries (inf / NaN) are clamped to ``UNCONV_PENALTY`` so the
+    optimizer always sees a finite, monotonic objective; otherwise gradient-
+    free methods (Powell, L-BFGS-B) stall the moment any single r_s fails to
+    converge.  The clamp is a strict over-estimate for any plausible
+    converged solution (n(k) in [0, 1] gives RMSE <= 1 with k^2 weight on
+    [0, kmax]), so the optimizer is biased toward weight vectors that yield
+    converged solutions everywhere.
+    """
+    if not per_rs:
         return float("inf")
-    return math.sqrt(sum(errs) / len(errs)) if errs else float("inf")
+    errs: list[float] = []
+    for v in per_rs.values():
+        if math.isfinite(v):
+            errs.append(v * v)
+        else:
+            errs.append(UNCONV_PENALTY * UNCONV_PENALTY)
+    return math.sqrt(sum(errs) / len(errs))
+
+
+# Penalty applied per r_s when SCF didn't converge or n(k) export is missing.
+# Chosen well above any feasible k^2-weighted RMSE on n(k) in [0, 1] so that
+# the optimizer monotonically prefers converged candidates while still seeing
+# finite, comparable objective values across non-converged trials.
+UNCONV_PENALTY = 5.0
 
 
 def load_nk_tsv(path: Path) -> tuple[np.ndarray, np.ndarray, bool | None]:
