@@ -26,6 +26,7 @@ include_directories(${PROJECT_SOURCE_DIR}/include)
 add_executable(rdmft_heg
     src/main.cpp
     src/MomentumDistributionGZ.cpp
+    src/NNFunctional.cpp
 )
 
 enable_testing()
@@ -37,6 +38,12 @@ add_executable(test_gz_momentum
     src/MomentumDistributionGZ.cpp
 )
 add_test(NAME gz_momentum COMMAND test_gz_momentum)
+
+add_executable(test_nn_functional
+    tests/test_nn_functional.cpp
+    src/NNFunctional.cpp
+)
+add_test(NAME nn_functional COMMAND test_nn_functional)
 
 # Helper binary used by scripts/plot_gz.py to render the
 # Gori-Giorgi/Ziesche n(k, rs) parametrization (paper Fig. 6).

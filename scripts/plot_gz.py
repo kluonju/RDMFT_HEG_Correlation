@@ -12,7 +12,8 @@ Usage::
     make build/dump_gz_grid
     python3 scripts/plot_gz.py [--rs 1,2,5,10] [--out figures/nk_gz.png]
 
-The default rs list ``1,2,3,5,7,10`` reproduces Fig. 6 of the paper.
+The default rs list ``0.2,0.5,1,2,3,5,7,10,20, 50`` extends Fig. 6 with low-density
+points and keeps the paper's rs values.
 """
 from __future__ import annotations
 
@@ -42,8 +43,11 @@ def run_dump(binary: Path, rs_list: list[float], nk: int) -> np.ndarray:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--rs", default="1,2,3,5,7,10",
-                    help="Comma-separated rs values (default 1,2,3,5,7,10)")
+    # ap.add_argument("--rs", default="0.2,0.5,1,2,3,5,7,10,20,50",
+    # help="Comma-separated rs values (default 0.2,0.5,1,2,3,5,7,10,20,50)")
+
+    ap.add_argument("--rs", default="0.2,0.5,1,2,3,5,7,10,15",
+                    help="Comma-separated rs values (default 0.2,0.5,1,2,3,5,7,10,15)")
     ap.add_argument("--bin", default="build/dump_gz_grid",
                     help="Path to dump_gz_grid binary (built from tools/dump_gz_grid.cpp)")
     ap.add_argument("--n", type=int, default=401,

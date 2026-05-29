@@ -31,7 +31,7 @@ endif
 INCLUDES := -Iinclude
 
 BIN_DIR  := build
-SRCS     := src/main.cpp src/MomentumDistributionGZ.cpp
+SRCS     := src/main.cpp src/MomentumDistributionGZ.cpp src/NNFunctional.cpp
 TARGET   := $(BIN_DIR)/rdmft_heg
 TEST_BIN := $(BIN_DIR)/test_hf_exchange
 TEST_GZ_BIN := $(BIN_DIR)/test_gz_momentum
@@ -52,9 +52,15 @@ FUNCS := Mueller,CGA,CHF,OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545
 NK_DIR := data/nk
 NK_FUNCS := $(FUNCS)
 
-.PHONY: all run rerun geo optgeo hybopt plot plot-gz nk-data plot-nk plot-nk-optgeo plot-nk-hybopt test clean clean-data
+TEST_NN_BIN := $(BIN_DIR)/test_nn_functional
+NN_BEST_DIR := build/nn_best
+NN_DATA_DIR := build/nn_data
+NN_HIDDEN ?= 4,4
 
-all: $(TARGET) $(TEST_BIN) $(TEST_GZ_BIN) $(DUMP_GZ_BIN)
+.PHONY: all run rerun geo optgeo hybopt plot plot-gz nk-data plot-nk plot-nk-optgeo plot-nk-hybopt \
+        prepare-nn-data optimize-nn-gz plot-nk-nn test clean clean-data
+
+all: $(TARGET) $(TEST_BIN) $(TEST_GZ_BIN) $(TEST_NN_BIN) $(DUMP_GZ_BIN)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
@@ -70,6 +76,9 @@ $(TEST_GZ_BIN): tests/test_gz_momentum.cpp src/MomentumDistributionGZ.cpp $(HEAD
 
 $(DUMP_GZ_BIN): tools/dump_gz_grid.cpp src/MomentumDistributionGZ.cpp $(HEADERS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tools/dump_gz_grid.cpp src/MomentumDistributionGZ.cpp -o $@
+
+$(TEST_NN_BIN): tests/test_nn_functional.cpp src/NNFunctional.cpp $(HEADERS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_nn_functional.cpp src/NNFunctional.cpp -o $@
 
 # Incremental sweep: skip functionals whose data/<name>.tsv already exists.
 # Adding a new functional therefore only runs that functional, leaving the
@@ -161,12 +170,28 @@ plot-nk-hybopt:
 # src/MomentumDistributionGZ.cpp.  No --funcs / RDMFT solve needed.
 plot-gz: $(DUMP_GZ_BIN)
 	mkdir -p figures
-	python3 scripts/plot_gz.py --rs 1,2,3,5,7,10 \
+	python3 scripts/plot_gz.py --rs 0.2,0.5,1,2,3,5,7,10,15 \
 		--bin $(DUMP_GZ_BIN) --out figures/nk_gz.png
 
-test: $(TEST_BIN) $(TEST_GZ_BIN) $(DUMP_GZ_BIN)
+# Cache GZ n(k) targets (+ optional Power-alpha sweep) for NN training.
+prepare-nn-data: $(TARGET) $(DUMP_GZ_BIN)
+	python3 scripts/prepare_nn_gz_data.py --dump-gz $(DUMP_GZ_BIN) --exe $(TARGET) \
+		--data-dir $(NN_DATA_DIR) --power-sweep
+
+# Fit separable NN kernel f(n) vs GZ n(k) (slow; SciPy required).
+optimize-nn-gz: $(TARGET) prepare-nn-data
+	python3 scripts/optimize_nn_gz.py --exe $(TARGET) --dump-gz $(DUMP_GZ_BIN) \
+		--data-dir $(NN_DATA_DIR) --out-dir $(NN_BEST_DIR) --hidden $(NN_HIDDEN)
+
+plot-nk-nn: $(DUMP_GZ_BIN)
+	mkdir -p figures
+	python3 scripts/plot_nk_nn.py --dump-gz $(DUMP_GZ_BIN) \
+		--nk-dir $(NN_BEST_DIR)/nk --out figures/nk_nn_vs_gz.png
+
+test: $(TEST_BIN) $(TEST_GZ_BIN) $(TEST_NN_BIN) $(DUMP_GZ_BIN)
 	./$(TEST_BIN)
 	./$(TEST_GZ_BIN)
+	./$(TEST_NN_BIN)
 
 clean:
 	rm -rf $(BIN_DIR)

@@ -60,11 +60,7 @@ struct EnergyEvaluator {
         std::vector<double> V(N, 0.0);
         // Fast path: K(n_i,n_j) = f(n_i) f(n_j)  =>  one matvec per SCF step,
         // contiguous row access, optional OpenMP (no N^2 virtual kernel calls).
-        const auto* pf   = dynamic_cast<const PowerFunctional*>(&F);
-        const auto* hf   = dynamic_cast<const HFFunctional*>(&F);
-        const auto* mu_f = dynamic_cast<const MuellerFunctional*>(&F);
-        const auto* gu_f = dynamic_cast<const GUFunctional*>(&F);
-        if (pf || hf || mu_f || gu_f) {
+        if (F.is_factorized()) {
             std::vector<double> kf(N);
             for (std::size_t j = 0; j < N; ++j) {
                 kf[j] = g.k[j] * F.f(n[j]);
@@ -131,11 +127,7 @@ struct EnergyEvaluator {
         constexpr double pi = M_PI;
         const std::size_t N = g.n();
         std::vector<double> de(N, 0.0);
-        const auto* pf   = dynamic_cast<const PowerFunctional*>(&F);
-        const auto* hf   = dynamic_cast<const HFFunctional*>(&F);
-        const auto* mu_f = dynamic_cast<const MuellerFunctional*>(&F);
-        const auto* gu_f = dynamic_cast<const GUFunctional*>(&F);
-        if (pf || hf || mu_f || gu_f) {
+        if (F.is_factorized()) {
             std::vector<double> wf(N);
             for (std::size_t j = 0; j < N; ++j) {
                 wf[j] = g.w[j] * g.k[j] * F.f(n[j]);

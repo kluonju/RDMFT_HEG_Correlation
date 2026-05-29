@@ -34,6 +34,9 @@ public:
     virtual ~Functional() = default;
     virtual std::string name() const = 0;
 
+    // True when K(n_i,n_j) = f(n_i) f(n_j) for a scalar f(n).
+    virtual bool is_factorized() const { return true; }
+
     // Factorizable f(n).  By default we assume the kernel factorizes.
     virtual double f(double n) const = 0;
     virtual double df(double n) const = 0;
@@ -131,6 +134,7 @@ public:
 class CGAFunctional : public Functional {
 public:
     std::string name() const override { return "CGA"; }
+    bool is_factorized() const override { return false; }
     double f(double n) const override {
         return n > 0.0 ? std::sqrt(n) : 0.0;
     }
@@ -187,6 +191,7 @@ private:
 class BetaFunctional : public Functional {
 public:
     explicit BetaFunctional(double beta) : beta_(beta) {}
+    bool is_factorized() const override { return false; }
     std::string name() const override {
         // Use a compact, parseable label so that downstream scripts can
         // pretty-print it as "Beta(0.50)" etc.
@@ -273,6 +278,7 @@ public:
 class GEOFunctional : public Functional {
 public:
     std::string name() const override { return "GEO"; }
+    bool is_factorized() const override { return false; }
     double f(double n) const override {
         return n > 0.0 ? std::sqrt(n) : 0.0;
     }
@@ -337,6 +343,7 @@ public:
     double alpha() const { return alpha_; }
     double beta() const { return beta_; }
     double gamma() const { return gamma_; }
+    bool is_factorized() const override { return false; }
 
     std::string name() const override {
         char buf[96];
@@ -403,6 +410,7 @@ public:
 
     double lambda_mix() const { return lambda_; }
     double alpha() const { return alpha_; }
+    bool is_factorized() const override { return false; }
 
     std::string name() const override {
         char buf[96];
@@ -463,6 +471,7 @@ public:
         : alpha_(std::max(alpha, 1.0e-8)) {}
 
     double alpha() const { return alpha_; }
+    bool is_factorized() const override { return false; }
 
     std::string name() const override {
         char buf[64];
@@ -512,6 +521,7 @@ private:
 class SymBOWFunctional : public BOWFunctional {
 public:
     explicit SymBOWFunctional(double alpha = 0.61) : BOWFunctional(alpha) {}
+    bool is_factorized() const override { return false; }
 
     std::string name() const override {
         char buf[64];
@@ -547,6 +557,7 @@ class BBC1Functional : public Functional {
 public:
     explicit BBC1Functional(double smooth = 0.05) : smooth_(smooth) {}
     std::string name() const override { return "BBC1"; }
+    bool is_factorized() const override { return false; }
     double f(double n) const override {
         return n > 0.0 ? std::sqrt(n) : 0.0;
     }
@@ -570,8 +581,7 @@ public:
     }
 
 private:
-    double smooth_;  // smoothing width of the n=1/2 indicator
-    // Smoothed indicator w(n) ~ 1 for n < 0.5, ~ 0 for n > 0.5.
+    double smooth_;
     double w(double n) const {
         return 0.5 * (1.0 - std::tanh((n - 0.5) / smooth_));
     }
@@ -597,6 +607,7 @@ class BBC3Functional : public Functional {
 public:
     explicit BBC3Functional(double smooth = 0.05) : smooth_(smooth) {}
     std::string name() const override { return "BBC3"; }
+    bool is_factorized() const override { return false; }
     double f(double n) const override {
         return n > 0.0 ? std::sqrt(n) : 0.0;
     }
@@ -651,6 +662,9 @@ private:
     }
 };
 
+// Load separable NN kernel from JSON (implemented in src/NNFunctional.cpp).
+std::unique_ptr<Functional> load_nn_functional(const std::string& json_path);
+
 // Convenience factory.
 inline std::unique_ptr<Functional> make_functional(const std::string& key,
                                                    double alpha = 0.55) {
@@ -701,6 +715,14 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     // The Beta functional needs an explicit exponent; callers should use
     // make_functional("Beta", beta) explicitly (alpha is reused as beta).
     if (key == "Beta")    return std::make_unique<BetaFunctional>(alpha);
+    // NN@path/to/model.json — separable kernel with f(n) from a JSON MLP.
+    if (key.rfind("NN@", 0) == 0) {
+        const std::string path = key.substr(3);
+        if (!path.empty()) {
+            return load_nn_functional(path);
+        }
+        return nullptr;
+    }
     return nullptr;
 }
 

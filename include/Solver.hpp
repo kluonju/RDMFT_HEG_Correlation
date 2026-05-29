@@ -123,6 +123,56 @@ update_occupations_power(double alpha,
     return n;
 }
 
+// Invert df(n_i) * U_i = pi * k_i * (k_i^2/2 - mu) for generic factorized f(n).
+inline std::vector<double>
+update_occupations_factorized(double mu,
+                              const std::vector<double>& U,
+                              const Grid& g,
+                              const Functional& F) {
+    constexpr double pi = M_PI;
+    const std::size_t N = g.n();
+    std::vector<double> n(N, 0.0);
+
+    auto g_eq = [&](double ni, std::size_t i) {
+        const double k = g.k[i];
+        const double R = pi * k * (0.5 * k * k - mu);
+        return F.df(ni) * U[i] - R;
+    };
+
+    for (std::size_t i = 0; i < N; ++i) {
+        const double k = g.k[i];
+        if (k <= 0.0) {
+            n[i] = 1.0;
+            continue;
+        }
+        const double R = pi * k * (0.5 * k * k - mu);
+        if (U[i] <= 0.0) {
+            n[i] = (R <= 0.0) ? 1.0 : 0.0;
+            continue;
+        }
+        const double g0 = g_eq(0.0, i);
+        const double g1 = g_eq(1.0, i);
+        if (g0 >= 0.0) {
+            n[i] = 0.0;
+            continue;
+        }
+        if (g1 <= 0.0) {
+            n[i] = 1.0;
+            continue;
+        }
+        double lo = 0.0;
+        double hi = 1.0;
+        for (int it = 0; it < 80; ++it) {
+            const double mid = 0.5 * (lo + hi);
+            const double gm = g_eq(mid, i);
+            if (gm < 0.0) lo = mid;
+            else            hi = mid;
+        }
+        n[i] = 0.5 * (lo + hi);
+    }
+    return n;
+}
+
 inline std::vector<double> initial_step(double rs, const Grid& g) {
     std::vector<double> n(g.n(), 0.0);
     const double kf = HEG::kF(rs);
@@ -488,8 +538,9 @@ solve_rdmft(double rs,
     const HFFunctional*      hf   = dynamic_cast<const HFFunctional*>(&F);
     const MuellerFunctional* mu_f = dynamic_cast<const MuellerFunctional*>(&F);
     const GUFunctional*      gu_f = dynamic_cast<const GUFunctional*>(&F);
-    const bool factorized = (pf != nullptr) || (hf != nullptr)
-                          || (mu_f != nullptr) || (gu_f != nullptr);
+    const bool power_family = (pf != nullptr) || (hf != nullptr)
+                            || (mu_f != nullptr) || (gu_f != nullptr);
+    const bool generic_factorized = F.is_factorized() && !power_family;
 
     // Additive kernel: CHF inherits ``BetaFunctional(1/2)``; Beta is general
     // exponent; CGA uses K = (1/2) [ n_i n_j + g_i g_j ] (``CGAFunctional``).
@@ -581,6 +632,17 @@ solve_rdmft(double rs,
         return 0.5 * (lo + hi);
     };
 
+    auto bisect_mu_generic_factorized = [&](const std::vector<double>& U) {
+        double lo = opt.mu_lo, hi = opt.mu_hi;
+        for (int b = 0; b < opt.bisect_iter; ++b) {
+            const double m = 0.5 * (lo + hi);
+            auto n_try = update_occupations_factorized(m, U, g, F);
+            if (density_of(n_try) > rho_target) hi = m;
+            else                                 lo = m;
+        }
+        return 0.5 * (lo + hi);
+    };
+
     // Pick the appropriate hole inverter for additive kernels.
     auto invert_dg = [&](double s) -> double {
         if (cga)    return invert_h2_prime_for_cga(s);
@@ -593,10 +655,14 @@ solve_rdmft(double rs,
     for (it = 0; it < opt.max_iter; ++it) {
         std::vector<double> n_target;
 
-        if (factorized) {
+        if (power_family) {
             auto U = compute_U(n);
             mu = bisect_mu_factorized(U);
             n_target = update_occupations_power(alpha, mu, U, g);
+        } else if (generic_factorized) {
+            auto U = compute_U(n);
+            mu = bisect_mu_generic_factorized(U);
+            n_target = update_occupations_factorized(mu, U, g, F);
         } else if (hybopt) {
             const double lam = hybopt->lambda_mix();
             const double al = hybopt->alpha();

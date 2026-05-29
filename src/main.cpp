@@ -42,9 +42,9 @@ struct Args {
         0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0
     };
     std::vector<std::string> funcs;  // must be set via --funcs (no silent default list)
-    // Standard sweep (Makefile / nk figures): 801 odd nodes, k_max = 3 k_F;
+    // Standard sweep (Makefile / nk figures): 401 odd nodes, k_max = 3 k_F;
     // ``Grid::uniform_trapezoid`` on [0, k_max] (composite trapezoid weights).
-    int    N_grid = 801;
+    int    N_grid = 401;
     double k_max_factor = 3.0;   // k_max = factor * k_F  (default 3 => k/k_F <= 3)
     std::string out_dir = "data";
     std::string nk_out_dir;  // if non-empty, write n(k) TSVs under this directory
@@ -61,12 +61,13 @@ void print_help() {
         "  --funcs <list>       **required** comma-separated functionals\n"
         "                       (HF, Mueller, GU, CGA, CHF, BBC1, BBC3, GEO,\n"
         "                        OptGeo@<a>;<b>;<c>, HybOpt@lambda;alpha, Power@<alpha>,\n"
-        "                        Beta@<beta>, BOW or BOW@alpha, SymBow or SymBow@alpha)\n"
+        "                        Beta@<beta>, BOW or BOW@alpha, SymBow or SymBow@alpha,\n"
+        "                        NN@<path/to/model.json>)\n"
         "                       OptGeo: GEO-style three channels; three angles (two ';').\n"
         "                       HybOpt: (1-lambda) HF + lambda Power(alpha); two floats (one ';').\n"
         "                       Shell: quote keys that contain ';' (e.g. --funcs 'HybOpt@0.4;0.56').\n"
         "                       OptGM@... is accepted as a legacy alias for HybOpt@....\n"
-        "  --N <int>            #grid points (odd, default 801)\n"
+        "  --N <int>            #grid points (odd, default 401)\n"
         "  --kmax <float>       k_max = factor * k_F(r_s) at each r_s (default 3)\n"
         "  --out-dir <dir>      directory for per-functional TSVs (default data)\n"
         "  --nk-out <dir>       write n(k) to <dir>/<func>_rs<rs>.tsv for each solve.\n"
@@ -137,7 +138,7 @@ std::unique_ptr<Functional> make(const std::string& key) {
         return std::make_unique<SymBOWFunctional>(alpha);
     }
     if (key.rfind("OptGeo@", 0) == 0 || key.rfind("HybOpt@", 0) == 0
-        || key.rfind("OptGM@", 0) == 0) {
+        || key.rfind("OptGM@", 0) == 0 || key.rfind("NN@", 0) == 0) {
         return make_functional(key);
     }
     return make_functional(key);
