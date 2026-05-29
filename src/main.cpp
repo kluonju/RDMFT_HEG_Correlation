@@ -270,28 +270,37 @@ int main(int argc, char** argv) {
                               args.nk_out_dir.c_str(),
                               nk_stem_for(key).c_str(),
                               rs);
-                const std::filesystem::path nk_path(nk_name);
-                if (!r.converged) {
-                    std::error_code ec;
-                    std::filesystem::remove(nk_path, ec);
-                    std::cerr << "Warning: skip n(k) export (not converged): "
-                              << nk_path.string() << "\n";
-                } else {
-                    std::ofstream nk(nk_name);
-                    if (nk) {
-                        nk << std::scientific << std::setprecision(16);
-                        nk << "# rs=" << rs << " kF=" << kf << " k_max=" << k_max
-                           << "\n";
-                        nk << "# functional: " << F->name() << "\n";
-                        nk << "# converged: 1\n";
-                        nk << "# k\tn\n";
-                        for (std::size_t i = 0; i < g.n(); ++i) {
-                            nk << g.k[i] << '\t' << r.n[i] << "\n";
-                        }
-                    } else {
-                        std::cerr << "Warning: cannot open " << nk_name
-                                  << " for nk export\n";
+                std::ofstream nk(nk_name);
+                if (nk) {
+                    // Always export n(k), even when the SCF did not fully
+                    // converge.  Downstream tooling (optimize_nn_gz.py) needs
+                    // a finite RMSE signal on bad weight vectors, so the
+                    // ``# converged:`` flag is reported instead of deleting
+                    // the file.  The energy TSV still flags (r.converged?1:0).
+                    const double rho_target = HEG::density(rs);
+                    const double rho_err = std::abs(r.rho - rho_target);
+                    nk << std::scientific << std::setprecision(16);
+                    nk << "# rs=" << rs << " kF=" << kf << " k_max=" << k_max
+                       << "\n";
+                    nk << "# functional: " << F->name() << "\n";
+                    nk << "# converged: " << (r.converged ? 1 : 0) << "\n";
+                    nk << "# rho_target=" << rho_target
+                       << " rho_actual=" << r.rho
+                       << " rho_err=" << rho_err << "\n";
+                    nk << "# iters=" << r.iters << " mu=" << r.mu << "\n";
+                    nk << "# k\tn\n";
+                    for (std::size_t i = 0; i < g.n(); ++i) {
+                        nk << g.k[i] << '\t' << r.n[i] << "\n";
                     }
+                    if (!r.converged) {
+                        std::cerr << "Warning: SCF did not converge for "
+                                  << F->name() << " r_s=" << rs
+                                  << " (rho_err=" << rho_err
+                                  << "); n(k) exported anyway.\n";
+                    }
+                } else {
+                    std::cerr << "Warning: cannot open " << nk_name
+                              << " for nk export\n";
                 }
             }
 

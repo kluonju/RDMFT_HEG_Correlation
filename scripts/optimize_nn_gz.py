@@ -40,6 +40,7 @@ from nn_gz_common import (  # noqa: E402
     PRESCREEN_RS,
     POWER_SWEEP_FILE,
     REPO_ROOT,
+    UNCONV_PENALTY,
     _trapz,
     aggregate_rmse,
     ensure_gz_targets,
@@ -278,23 +279,18 @@ def gz_rmse(
     )
     stem = NN_NK_STEM
     per_rs: dict[float, float] = {}
-    errs: list[float] = []
     prefix = f"[{label}] " if label else ""
     for rs in rs_list:
         nk_path = work_dir / "nk" / f"{stem}_rs{rs:.4f}.tsv"
         if not nk_path.is_file():
+            # The C++ driver always writes n(k) now (even on non-convergence),
+            # so a truly missing file means the run crashed: full penalty.
             log.info(
-                f"{prefix}r_s={rs:g}: missing nk export (SCF did not converge) -> inf"
+                f"{prefix}r_s={rs:g}: missing nk export -> penalty {UNCONV_PENALTY:g}"
             )
-            per_rs[rs] = float("inf")
-            errs.append(float("inf"))
+            per_rs[rs] = float(UNCONV_PENALTY)
             continue
         k_m, n_m, conv = load_nk_tsv(nk_path)
-        if conv is False:
-            log.info(f"{prefix}r_s={rs:g}: SCF did not converge -> inf RMSE")
-            per_rs[rs] = float("inf")
-            errs.append(float("inf"))
-            continue
         x_gz, n_gz = gz_cache[rs]
         x = np.linspace(0.0, kmax, nk)
         n_ref = np.interp(x, x_gz, n_gz)
@@ -302,12 +298,23 @@ def gz_rmse(
         w = x * x if weight_x2 else np.ones_like(x)
         diff = n_mod - n_ref
         mse = float(_trapz(w * diff * diff, x) / _trapz(w, x))
-        per_rs[rs] = math.sqrt(mse)
-        errs.append(mse)
-        conv_s = "ok" if conv is not False else "no"
-        if conv is None:
-            conv_s = "?"
-        log.detail(f"{prefix}  r_s={rs:g}: RMSE={per_rs[rs]:.6f}  converged={conv_s}")
+        rmse = math.sqrt(mse)
+        if conv is False:
+            # SCF did not converge: report a constant per-r_s penalty larger
+            # than any feasible converged RMSE so the aggregate stays finite
+            # and the optimizer is biased toward weight vectors that converge
+            # everywhere.  The achieved (raw) RMSE is still logged below for
+            # diagnostics.
+            penalized = float(UNCONV_PENALTY)
+            per_rs[rs] = penalized
+            log.detail(
+                f"{prefix}  r_s={rs:g}: RMSE={rmse:.6f} (not converged) "
+                f"-> penalty {penalized:.6f}"
+            )
+            continue
+        per_rs[rs] = rmse
+        conv_s = "ok" if conv is True else ("?" if conv is None else "no")
+        log.detail(f"{prefix}  r_s={rs:g}: RMSE={rmse:.6f}  converged={conv_s}")
     return aggregate_rmse(per_rs), per_rs
 
 
