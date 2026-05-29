@@ -15,7 +15,7 @@ _trapz = getattr(np, "trapezoid", None) or np.trapz
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RS = [0.2, 0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0]
 PRESCREEN_RS = [1.0, 2.0, 5.0]
-DEFAULT_HIDDEN = [4, 4]
+DEFAULT_HIDDEN = [16, 16]
 
 NN_FUNC_KEY = "NN@model.json"
 NN_NK_STEM = "NN_model.json"
@@ -184,33 +184,52 @@ def rmse_vs_gz(
     return math.sqrt(mse)
 
 
-def aggregate_rmse(per_rs: dict[float, float]) -> float:
-    """Root-mean-square of per-r_s RMSEs.
+def l1_error_vs_gz(
+    k_m: np.ndarray,
+    n_m: np.ndarray,
+    gz_cache: dict[float, tuple[np.ndarray, np.ndarray]],
+    rs: float,
+    *,
+    kmax: float,
+    nk: int,
+) -> float:
+    """Per-r_s L1 deviation against the GZ reference.
 
-    Non-finite entries (inf / NaN) are clamped to ``UNCONV_PENALTY`` so the
-    optimizer always sees a finite, monotonic objective; otherwise gradient-
-    free methods (Powell, L-BFGS-B) stall the moment any single r_s fails to
-    converge.  The clamp is a strict over-estimate for any plausible
-    converged solution (n(k) in [0, 1] gives RMSE <= 1 with k^2 weight on
-    [0, kmax]), so the optimizer is biased toward weight vectors that yield
-    converged solutions everywhere.
+        E(r_s) = int_0^{kmax * k_F} |n(k) - n_ref(k)| dk            (Hartree units)
+
+    Implemented in the dimensionless variable x = k / k_F (which is the
+    convention used throughout the repository: ``load_nk_tsv`` already
+    divides the k column by k_F).  ``kmax`` is the upper limit in those
+    units, so passing ``kmax = 3`` integrates to k = 3 k_F.  The k_F
+    factor that would convert this to absolute Hartree units cancels out
+    of the loss because the optimizer only compares relative values, and
+    the dimensionless integral has a uniform scale across r_s
+    (0 <= E <= kmax for n, n_ref in [0, 1]).
+    """
+    x_gz, n_gz = gz_cache[rs]
+    x = np.linspace(0.0, kmax, nk)
+    n_ref = np.interp(x, x_gz, n_gz)
+    n_mod = np.interp(x, k_m, n_m)
+    return float(_trapz(np.abs(n_mod - n_ref), x))
+
+
+def aggregate_rmse(per_rs: dict[float, float]) -> float:
+    """RMSE of per-r_s L1 errors:  sqrt( mean_i E_i^2 ).
+
+    The NN is trained to minimise this scalar.  Non-finite per-r_s values
+    propagate to the aggregate (returned as +inf), which is the natural
+    signal for a crashed SCF or missing n(k) export.  No UNCONV_PENALTY
+    clamp is applied here: gradient-free optimizers can still make
+    progress because the C++ driver writes n(k) even on non-convergence
+    (see ``main.cpp``), so the achieved L1 error is finite for any solve
+    that completed at all.
     """
     if not per_rs:
         return float("inf")
-    errs: list[float] = []
-    for v in per_rs.values():
-        if math.isfinite(v):
-            errs.append(v * v)
-        else:
-            errs.append(UNCONV_PENALTY * UNCONV_PENALTY)
-    return math.sqrt(sum(errs) / len(errs))
-
-
-# Penalty applied per r_s when SCF didn't converge or n(k) export is missing.
-# Chosen well above any feasible k^2-weighted RMSE on n(k) in [0, 1] so that
-# the optimizer monotonically prefers converged candidates while still seeing
-# finite, comparable objective values across non-converged trials.
-UNCONV_PENALTY = 5.0
+    vals = list(per_rs.values())
+    if any(not math.isfinite(v) for v in vals):
+        return float("inf")
+    return math.sqrt(sum(v * v for v in vals) / len(vals))
 
 
 def load_nk_tsv(path: Path) -> tuple[np.ndarray, np.ndarray, bool | None]:

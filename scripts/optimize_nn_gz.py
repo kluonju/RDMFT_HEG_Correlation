@@ -40,11 +40,10 @@ from nn_gz_common import (  # noqa: E402
     PRESCREEN_RS,
     POWER_SWEEP_FILE,
     REPO_ROOT,
-    UNCONV_PENALTY,
-    _trapz,
     aggregate_rmse,
     ensure_gz_targets,
     format_per_rs,
+    l1_error_vs_gz,
     load_nk_tsv,
 )
 
@@ -82,9 +81,25 @@ def eval_f(model: dict, n: float | np.ndarray) -> np.ndarray:
     return (n_arr.reshape(-1) * softplus(raw)).reshape(n_arr.shape)
 
 
-def build_model(hidden: list[int], weights: list[np.ndarray] | None = None) -> dict:
-    """Construct model dict with kernels [1->h0->...->1]."""
-    sizes = [1] + hidden + [1]
+def build_model(
+    hidden: list[int],
+    weights: list[np.ndarray] | None = None,
+    *,
+    kernel_type: str = "separable",
+) -> dict:
+    """Construct an MLP model dict.
+
+    kernel_type:
+      ``separable``  - input dim 1; the C++ NNFunctional reads this as
+                       K(n_i, n_j) = f(n_i) f(n_j) with f(n) = n * softplus(MLP(n)).
+      ``pair``       - input dim 2; the C++ NNPairFunctional reads this as
+                       K(n_i, n_j) = sqrt(n_i n_j) * MLP([n_i+n_j, n_i n_j]).
+                       Sign-free output, full kernel flexibility.
+    """
+    if kernel_type not in ("separable", "pair"):
+        raise ValueError(f"unknown kernel_type: {kernel_type}")
+    in0 = 1 if kernel_type == "separable" else 2
+    sizes = [in0] + hidden + [1]
     kernels: list[dict[str, Any]] = []
     rng = np.random.default_rng(0)
     for ell in range(len(sizes) - 1):
@@ -104,11 +119,55 @@ def build_model(hidden: list[int], weights: list[np.ndarray] | None = None) -> d
         )
     return {
         "version": 1,
-        "name": "NN",
+        "kernel_type": kernel_type,
+        "name": "NN" if kernel_type == "separable" else "NNPair",
         "hidden": hidden,
         "kernels": kernels,
         "out_bias": 0.0,
     }
+
+
+def init_pair_model(
+    target: str = "hf",
+    hidden: list[int] | None = None,
+    alpha: float = 1.0,
+) -> dict:
+    """Initialize a 2-input pair MLP near a known kernel for stable warm-start.
+
+    With K(a, b) = sqrt(a b) * raw_MLP, choosing  raw ~ (a b)^{(alpha - 1/2)}
+    gives K(a, b) ~ (a b)^alpha.  We fit ``out_bias`` to the mean target raw
+    over a few representative pair anchors and leave small random hidden
+    weights so the optimizer can deform the network without being trapped
+    near the warm start.
+
+    target:
+      ``hf``      alpha = 1     (Hartree-Fock pair kernel a*b)
+      ``mueller`` alpha = 1/2   (sqrt(a*b))
+      ``power``   alpha given via the ``alpha`` argument
+    """
+    if hidden is None:
+        hidden = list(DEFAULT_HIDDEN)
+    model = build_model(hidden, kernel_type="pair")
+    if target == "hf":
+        a = 1.0
+    elif target == "mueller":
+        a = 0.5
+    elif target == "power":
+        a = float(alpha)
+    else:
+        raise ValueError(f"unknown pair init target: {target}")
+    anchors = np.array(
+        [(0.2, 0.2), (0.5, 0.5), (0.8, 0.8), (0.4, 0.7), (0.1, 0.9)], dtype=float
+    )
+    p = anchors[:, 0] * anchors[:, 1]
+    raw_tgt = np.power(np.clip(p, 1e-8, None), a - 0.5)
+    model["out_bias"] = float(np.mean(raw_tgt))
+    rng = np.random.default_rng(123)
+    for layer in model["kernels"][:-1]:
+        nin = layer["in"]
+        nout = layer["out"]
+        layer["W"] = (rng.normal(scale=0.05, size=(nout, nin))).tolist()
+    return model
 
 
 def init_power_model(alpha: float = 0.55, hidden: list[int] | None = None) -> dict:
@@ -259,13 +318,34 @@ def gz_rmse(
     n_grid: int,
     kmax: float,
     nk: int,
-    weight_x2: bool,
     init_uniform: float | None,
     work_dir: Path,
     log: Log,
     label: str = "",
 ) -> tuple[float, dict[float, float]]:
-    """Run SCF and return (RMSE, per-rs RMSE).  Requires ``work_dir/model.json``."""
+    """Run SCF and return ``(loss, per_rs_l1)``.
+
+    ``per_rs_l1[rs]`` is the L1 deviation against the GZ reference,
+
+        E(r_s) = int_0^{kmax * k_F} |n(k) - n_ref(k)| dk            (k_F units)
+
+    where the integration variable in the loaded TSV is x = k/k_F (see
+    ``load_nk_tsv``); ``kmax`` is the upper limit in those units, so the
+    default ``kmax = 3`` integrates to k = 3 k_F.
+
+    The scalar loss is the RMSE across r_s:
+
+        L = sqrt( mean_i E(r_s_i)^2 )
+
+    No UNCONV_PENALTY clamp.  When the SCF does not fully converge, the
+    C++ driver still exports n(k) (with `# converged: 0`), so the L1
+    error is finite (and bounded by ``kmax`` because n, n_ref in [0, 1]).
+    A truly missing file (full crash of rdmft_heg) raises
+    ``FileNotFoundError`` so the calling ``objective`` can treat that
+    evaluation as inf and skip the direction.
+
+    Requires ``work_dir/model.json``.
+    """
     run_rdmft_nk(
         exe,
         work_dir,
@@ -283,38 +363,18 @@ def gz_rmse(
     for rs in rs_list:
         nk_path = work_dir / "nk" / f"{stem}_rs{rs:.4f}.tsv"
         if not nk_path.is_file():
-            # The C++ driver always writes n(k) now (even on non-convergence),
-            # so a truly missing file means the run crashed: full penalty.
-            log.info(
-                f"{prefix}r_s={rs:g}: missing nk export -> penalty {UNCONV_PENALTY:g}"
+            raise FileNotFoundError(
+                f"{prefix}rdmft_heg did not produce {nk_path}; "
+                "run with --verbose to inspect the SCF logs."
             )
-            per_rs[rs] = float(UNCONV_PENALTY)
-            continue
         k_m, n_m, conv = load_nk_tsv(nk_path)
-        x_gz, n_gz = gz_cache[rs]
-        x = np.linspace(0.0, kmax, nk)
-        n_ref = np.interp(x, x_gz, n_gz)
-        n_mod = np.interp(x, k_m, n_m)
-        w = x * x if weight_x2 else np.ones_like(x)
-        diff = n_mod - n_ref
-        mse = float(_trapz(w * diff * diff, x) / _trapz(w, x))
-        rmse = math.sqrt(mse)
-        if conv is False:
-            # SCF did not converge: report a constant per-r_s penalty larger
-            # than any feasible converged RMSE so the aggregate stays finite
-            # and the optimizer is biased toward weight vectors that converge
-            # everywhere.  The achieved (raw) RMSE is still logged below for
-            # diagnostics.
-            penalized = float(UNCONV_PENALTY)
-            per_rs[rs] = penalized
-            log.detail(
-                f"{prefix}  r_s={rs:g}: RMSE={rmse:.6f} (not converged) "
-                f"-> penalty {penalized:.6f}"
-            )
-            continue
-        per_rs[rs] = rmse
+        e_l1 = l1_error_vs_gz(k_m, n_m, gz_cache, rs, kmax=kmax, nk=nk)
+        per_rs[rs] = e_l1
         conv_s = "ok" if conv is True else ("?" if conv is None else "no")
-        log.detail(f"{prefix}  r_s={rs:g}: RMSE={rmse:.6f}  converged={conv_s}")
+        log.detail(
+            f"{prefix}  r_s={rs:g}: L1=int|n-n_ref|dk = {e_l1:.6f} "
+            f"(k/k_F in [0, {kmax:g}])  converged={conv_s}"
+        )
     return aggregate_rmse(per_rs), per_rs
 
 
@@ -343,9 +403,16 @@ def main() -> None:
     ap.add_argument("--maxiter", type=int, default=80)
     ap.add_argument("--out-dir", type=Path, default=REPO_ROOT / "build" / "nn_best")
     ap.add_argument("--init", choices=("power", "mueller", "random"), default="power")
+    ap.add_argument(
+        "--kernel-type",
+        choices=("separable", "pair"),
+        default="separable",
+        help="separable (default): K(n_i,n_j)=f(n_i)f(n_j) with f from a "
+             "1-input MLP.  pair: K(n_i,n_j)=sqrt(n_i n_j)*MLP([n_i+n_j, n_i n_j]) "
+             "(non-separable, 2-input, sign-free output, maximum flexibility).",
+    )
     ap.add_argument("--init-uniform", type=float, default=0.5)
     ap.add_argument("--no-prescreen", action="store_true")
-    ap.add_argument("--uniform-weight", action="store_true", help="Use uniform k weight (default x^2)")
     ap.add_argument(
         "--quiet",
         action="store_true",
@@ -368,22 +435,23 @@ def main() -> None:
         raise SystemExit(f"Build dump_gz_grid first: {args.dump_gz}")
 
     log = Log(quiet=args.quiet, verbose=args.verbose)
-    weight_x2 = not args.uniform_weight
-    sizes = [1] + hidden + [1]
+    in0 = 1 if args.kernel_type == "separable" else 2
+    sizes = [in0] + hidden + [1]
     n_params = sum(
         sizes[i] * sizes[i + 1] + sizes[i + 1] for i in range(len(sizes) - 1)
     ) + 1
 
     log.info("=" * 60)
-    log.info("NN separable kernel optimization vs GZ n(k)")
+    log.info(f"NN {args.kernel_type} kernel optimization vs GZ n(k)")
     log.info("=" * 60)
     log.info(f"  exe       : {args.exe.resolve()}")
     log.info(f"  data_dir  : {args.data_dir.resolve()}")
     log.info(f"  dump_gz   : {args.dump_gz.resolve()}")
     log.info(f"  out_dir   : {args.out_dir.resolve()}")
+    log.info(f"  kernel    : {args.kernel_type} (input dim {in0})")
     log.info(f"  hidden    : {hidden}  ({n_params} parameters)")
     log.info(f"  method    : {args.method}  maxiter={args.maxiter}")
-    log.info(f"  weight    : {'k^2' if weight_x2 else 'uniform'}")
+    log.info("  objective : sqrt(mean_i E_i^2)  with E_i = " +              f"int_0^{{{args.kmax:g}*k_F}} |n - n_ref| dk")
     log.info(f"  init      : {args.init}  init_uniform={args.init_uniform}")
     log.info(f"  main r_s  : {rs_main}")
     log.info(f"  main grid : N={args.N}  kmax={args.kmax}")
@@ -396,7 +464,7 @@ def main() -> None:
         rs_main,
         args.gz_n,
         args.kmax,
-        weight_x2,
+        True,  # weight_x2 metadata; ignored by the L1 objective below
         log,
     )
     gz_pre = {rs: gz_main[rs] for rs in rs_pre if rs in gz_main}
@@ -406,16 +474,38 @@ def main() -> None:
         log.info(f"  power_sweep best alpha from cache: {sweep_alpha:g}")
 
     candidates: list[tuple[str, dict]] = []
-    if args.init == "power":
-        a0 = sweep_alpha if sweep_alpha is not None else 0.55
-        candidates.append((f"power{a0:g}", init_power_model(a0, hidden)))
-        if sweep_alpha is None or abs(a0 - 0.55) > 1e-6:
-            candidates.append(("power055", init_power_model(0.55, hidden)))
-    elif args.init == "mueller":
-        candidates.append(("mueller", init_power_model(0.5, hidden)))
+    if args.kernel_type == "pair":
+        # Pair-mode warm-starts mirror the separable family: each candidate
+        # initialises K(a, b) ~ (a*b)^alpha at a few anchor points.  The
+        # optimizer is then free to deform the kernel into any
+        # non-factorisable shape (sign-free MLP output) that minimises the
+        # L1-RMSE-against-GZ loss.
+        if args.init == "power":
+            a0 = sweep_alpha if sweep_alpha is not None else 0.55
+            candidates.append(
+                (f"pair_power{a0:g}", init_pair_model("power", hidden, a0))
+            )
+            if sweep_alpha is None or abs(a0 - 0.55) > 1e-6:
+                candidates.append(
+                    ("pair_power055", init_pair_model("power", hidden, 0.55))
+                )
+        elif args.init == "mueller":
+            candidates.append(("pair_mueller", init_pair_model("mueller", hidden)))
+        else:
+            candidates.append(("pair_random", build_model(hidden, kernel_type="pair")))
+        candidates.append(("pair_hf", init_pair_model("hf", hidden)))
+        candidates.append(("pair_power058", init_pair_model("power", hidden, 0.58)))
     else:
-        candidates.append(("random", build_model(hidden)))
-    candidates.append(("power058", init_power_model(0.58, hidden)))
+        if args.init == "power":
+            a0 = sweep_alpha if sweep_alpha is not None else 0.55
+            candidates.append((f"power{a0:g}", init_power_model(a0, hidden)))
+            if sweep_alpha is None or abs(a0 - 0.55) > 1e-6:
+                candidates.append(("power055", init_power_model(0.55, hidden)))
+        elif args.init == "mueller":
+            candidates.append(("mueller", init_power_model(0.5, hidden)))
+        else:
+            candidates.append(("random", build_model(hidden)))
+        candidates.append(("power058", init_power_model(0.58, hidden)))
 
     best_model = candidates[0][1]
     best_rmse = float("inf")
@@ -440,7 +530,6 @@ def main() -> None:
                         n_grid=args.prescreen_N,
                         kmax=args.kmax,
                         nk=args.gz_n,
-                        weight_x2=weight_x2,
                         init_uniform=args.init_uniform,
                         work_dir=tmp_path,
                         log=log,
@@ -450,14 +539,14 @@ def main() -> None:
                     log.info(f"  {label}: FAILED ({time.time() - t_cand:.1f}s): {e}")
                     continue
                 log.info(
-                    f"  {label}: RMSE={rmse:.6f}  ({time.time() - t_cand:.1f}s)"
+                    f"  {label}: loss={rmse:.6f}  ({time.time() - t_cand:.1f}s)"
                 )
                 log.detail(f"    {format_per_rs(per)}")
                 if rmse < best_rmse:
                     best_rmse = rmse
                     best_model = model
                     log.info(f"  ** new prescreen best ({label}) **")
-        log.info(f"\nPrescreen winner: RMSE={best_rmse:.6f}")
+        log.info(f"\nPrescreen winner: loss={best_rmse:.6f}")
     else:
         log.info("Skipping prescreen (--no-prescreen)")
 
@@ -491,7 +580,6 @@ def main() -> None:
                     n_grid=args.N,
                     kmax=args.kmax,
                     nk=args.gz_n,
-                    weight_x2=weight_x2,
                     init_uniform=args.init_uniform,
                     work_dir=tmp_path,
                     log=log,
@@ -506,7 +594,7 @@ def main() -> None:
             if rmse < best_rmse_main[0]:
                 best_rmse_main[0] = rmse
                 improved = "  ** new best **"
-            log.info(f"  RMSE={rmse:.6f}  ({dt:.1f}s){improved}")
+            log.info(f"  loss={rmse:.6f}  ({dt:.1f}s){improved}")
             log.detail(f"    {format_per_rs(per)}")
             return rmse
 
@@ -519,7 +607,7 @@ def main() -> None:
     log.info("-" * 60)
     log.info(f"Main optimization ({args.method}, maxiter={args.maxiter})")
     log.info("-" * 60)
-    log.info(f"  starting RMSE target from prescreen: {best_rmse:.6f}")
+    log.info(f"  starting loss target from prescreen: {best_rmse:.6f}")
     minimize_opts: dict[str, Any] = {"maxiter": args.maxiter}
     if not args.quiet:
         minimize_opts["disp"] = True
@@ -555,13 +643,12 @@ def main() -> None:
         n_grid=args.N,
         kmax=args.kmax,
         nk=args.gz_n,
-        weight_x2=weight_x2,
         init_uniform=args.init_uniform,
         work_dir=args.out_dir,
         log=log,
         label="final",
     )
-    log.info(f"  aggregate RMSE={final_rmse:.6f}")
+    log.info(f"  aggregate loss={final_rmse:.6f}")
     log.detail(f"    {format_per_rs(final_per)}")
 
     nk_dir = args.out_dir / "nk"
