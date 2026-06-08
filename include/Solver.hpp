@@ -701,10 +701,7 @@ solve_rdmft(double rs,
                 return update_occupations_hf_power_mix(m, U1, U2, g, c1, c2, al);
             });
             n_target = update_occupations_hf_power_mix(mu, U1, U2, g, c1, c2, al);
-        } else if (geo || optgeo) {
-            // Multi-power GEO / optGeo kernel: build U1, U2, U3 with f1(n) = n,
-            // f2(n) = sqrt(n), f3(n) = n^{3/4}, then solve the EL equation
-            // pointwise via 1-D bisection.
+        } else if (geo) {
             auto f1 = [](double nn) { return nn; };
             auto f2 = [](double nn) { return nn > 0.0 ? std::sqrt(nn) : 0.0; };
             auto f3 = [](double nn) { return nn > 0.0 ? std::pow(nn, 0.75) : 0.0; };
@@ -712,18 +709,10 @@ solve_rdmft(double rs,
             auto U2 = compute_U_with(n, g, W, f2);
             auto U3 = compute_U_with(n, g, W, f3);
 
-            const double c1 = geo ? 0.25 : optgeo->w1();
-            const double c2 = geo ? 0.25 : optgeo->w2();
-            const double c3 = geo ? 0.50 : optgeo->w3();
-
             mu = adaptive_bisect([&](double m) {
-                return geo
-                    ? update_occupations_geo(m, U1, U2, U3, g)
-                    : update_occupations_optGM(m, U1, U2, U3, g, c1, c2, c3);
+                return update_occupations_geo(m, U1, U2, U3, g);
             });
-            n_target = geo
-                ? update_occupations_geo(mu, U1, U2, U3, g)
-                : update_occupations_optGM(mu, U1, U2, U3, g, c1, c2, c3);
+            n_target = update_occupations_geo(mu, U1, U2, U3, g);
         } else if (additive) {
             // Additive kernel K = n_i n_j + g(n_i) g(n_j): closed-form update
             // for n_i once mu is found by bisection.  We use a soft floor on n

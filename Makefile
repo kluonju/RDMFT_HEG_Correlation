@@ -45,9 +45,9 @@ RS_LIST  := 0.2,0.3,0.5,1,2,3,4,5,6,8,10
 N_GRID       ?= 401
 INIT_UNIFORM ?= 0.5
 # Default sweep: only these functionals (edit FUNCS). OptGeo uses ';' — quote for the shell.
-# OptGeo: (a;b;c) on unit sphere; weights w1,w2,w3 = a^2,b^2,c^2 = 0.00675,0.64213,0.35112
+# OptGeo: HF + w*(2*sigmoid(k*x)-1), x=(n-1/2)^2 pair variable (default w=1, k=5).
 # HybOpt: HF/Power mix fit vs PW92 on r_s in [0.2, 6] at N=401 (see data/optimize_optGM_rs6.log).
-FUNCS := Mueller,CGA,CHF,OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545538598386,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076
+FUNCS := Mueller,CGA,CHF,OptGeo@1;5,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076
 
 NK_DIR := data/nk
 NK_FUNCS := $(FUNCS)
@@ -116,7 +116,7 @@ optgeo: $(TARGET)
 	mkdir -p $(DATA_DIR)
 	./$(TARGET) --N $(N_GRID) --kmax 3 \
 		--rs $(RS_LIST) \
-		--funcs "OptGeo@-0.0821547206643049;0.8013311419635793;0.5925545538598386" \
+		--funcs "OptGeo@1;5" \
 		--init-uniform $(INIT_UNIFORM) \
 		--out-dir $(DATA_DIR) \
 		--force

@@ -309,46 +309,34 @@ public:
     }
 };
 
-// optGeo (optimized geometric mean on the GEO-style channels).  Same three
-// factorized channels as GEO (f1 = n, f2 = sqrt(n), f3 = n^{3/4}) but with
-// tunable nonnegative weights
+// optGeo: full HF pair kernel plus a sigmoid correlation in the centred pair
+// variable
 //
-//     K_optGeo(n_i, n_j) = w1 n_i n_j + w2 (n_i n_j)^{1/2} + w3 (n_i n_j)^{3/4},
+//     x_ij = (n_i - 1/2)^2 (n_j - 1/2)^2   (zero when either n = 1/2),
 //
-// where w1 = alpha^2, w2 = beta^2, w3 = gamma^2 and alpha^2 + beta^2 + gamma^2 = 1,
-// so K(1, 1) = 1 (HF saturation).  GEO in this codebase corresponds to
-// (w1, w2, w3) = (1/4, 1/2, 1/4).
-// CLI: ``OptGeo@a;b;c`` (three angles on the unit sphere; normalized in ctor).
+//     K_optGeo(n_i, n_j) = n_i n_j
+//                        + w * ( 2 sigma(k x_ij) - 1 ),
+//
+// where sigma(t) = 1 / (1 + exp(-t)).  The correction is 0 at x_ij = 0 and
+// approaches +w as x_ij grows (k > 0).  Parameters w (amplitude) and k
+// (steepness) are required to be non-negative.  Solved via projected gradient
+// (non-factorizable pair coupling).
+//
+// CLI: ``OptGeo@w;k`` (two semicolon-separated floats; commas reserved in --funcs).
 class OptGeoFunctional : public Functional {
 public:
-    explicit OptGeoFunctional(double alpha, double beta, double gamma) {
-        const double sq = alpha * alpha + beta * beta + gamma * gamma;
-        const double nrm = std::sqrt(sq);
-        if (nrm < 1.0e-15) {
-            // Degenerate input: fall back to equal mixing on the sphere.
-            alpha_ = beta_ = gamma_ = 1.0 / std::sqrt(3.0);
-        } else {
-            alpha_ = alpha / nrm;
-            beta_  = beta / nrm;
-            gamma_ = gamma / nrm;
-        }
-        w1_ = alpha_ * alpha_;
-        w2_ = beta_ * beta_;
-        w3_ = gamma_ * gamma_;
-    }
+    explicit OptGeoFunctional(double w, double k)
+        : w_(std::max(0.0, w)), k_(std::max(0.0, k)) {}
 
-    double w1() const { return w1_; }
-    double w2() const { return w2_; }
-    double w3() const { return w3_; }
-    double alpha() const { return alpha_; }
-    double beta() const { return beta_; }
-    double gamma() const { return gamma_; }
+    double w() const { return w_; }
+    double k() const { return k_; }
+    double w1() const { return w_; }
+    double w2() const { return k_; }
     bool is_factorized() const override { return false; }
 
     std::string name() const override {
         char buf[96];
-        std::snprintf(buf, sizeof(buf),
-                      "optGeo(a=%.4f,b=%.4f,c=%.4f)", alpha_, beta_, gamma_);
+        std::snprintf(buf, sizeof(buf), "optGeo(w=%.4g,k=%.4g)", w_, k_);
         return std::string(buf);
     }
     double f(double n) const override {
@@ -358,28 +346,55 @@ public:
         const double eps = 1.0e-14;
         return 0.5 / std::sqrt(n > eps ? n : eps);
     }
+
+    static double centre2(double n) {
+        const double h = n - 0.5;
+        return h * h;
+    }
+    static double pair_centre2(double ni, double nj) {
+        return centre2(ni) * centre2(nj);
+    }
+    static double d_centre2(double n) { return 2.0 * (n - 0.5); }
+
+    static double sigmoid_stable(double t) {
+        if (t >= 0.0) {
+            const double et = std::exp(-t);
+            return 1.0 / (1.0 + et);
+        }
+        const double et = std::exp(t);
+        return et / (1.0 + et);
+    }
+    static double dsigmoid_dt(double t) {
+        const double s = sigmoid_stable(t);
+        return s * (1.0 - s);
+    }
+
+    // w * (2 sigma(k x) - 1): 0 at x=0, -> w as k x -> +infty (k > 0).
+    static double corr_sigmoid(double x, double w, double k) {
+        if (std::abs(w) < 1.0e-15 || std::abs(k) < 1.0e-15) return 0.0;
+        const double s = sigmoid_stable(k * x);
+        return w * (2.0 * s - 1.0);
+    }
+
     double kernel(double ni, double nj) const override {
-        const double p = ni * nj;
-        if (p <= 0.0) return 0.0;
-        const double s12 = std::sqrt(p);
-        const double s34 = std::pow(p, 0.75);
-        return w1_ * p + w2_ * s12 + w3_ * s34;
+        const double hf = ni * nj;
+        const double x = pair_centre2(ni, nj);
+        return hf + corr_sigmoid(x, w_, k_);
     }
     double kernel_grad(double ni, double nj) const override {
-        const double eps = 1.0e-14;
-        const double nic = (ni > eps) ? ni : eps;
-        const double njc = (nj > eps) ? nj : eps;
-        const double pc  = nic * njc;
-        const double ds12 = 0.5 * std::sqrt(njc / nic);
-        const double ds34 = 0.75 * njc * std::pow(pc, -0.25);
-        return w1_ * njc + w2_ * ds12 + w3_ * ds34;
+        const double x = pair_centre2(ni, nj);
+        const double h2j = centre2(nj);
+        double dg = 0.0;
+        if (std::abs(w_) >= 1.0e-15 && std::abs(k_) >= 1.0e-15) {
+            const double t = k_ * x;
+            dg = w_ * 2.0 * dsigmoid_dt(t) * k_ * d_centre2(ni) * h2j;
+        }
+        return nj + dg;
     }
 
 private:
-    double alpha_;
-    double beta_;
-    double gamma_;
-    double w1_, w2_, w3_;
+    double w_;
+    double k_;
 };
 
 // HybOpt (hybrid HF/Power): convex mixture of the HF pair kernel and Power pair kernel
@@ -686,12 +701,12 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     if (key.rfind("SymBow@", 0) == 0) {
         return std::make_unique<SymBOWFunctional>(std::stod(key.substr(7)));
     }
-    // OptGeo@a;b;c — three angles (commas reserved in --funcs).
+    // OptGeo@w;k — HF + sigmoid correlation in (n-1/2)^2 pair variable.
     if (key.rfind("OptGeo@", 0) == 0) {
         const std::string rest = key.substr(7);
-        double a = 0.0, b = 0.0, c = 0.0;
-        if (std::sscanf(rest.c_str(), "%lf;%lf;%lf", &a, &b, &c) == 3) {
-            return std::make_unique<OptGeoFunctional>(a, b, c);
+        double w = 0.0, k = 0.0;
+        if (std::sscanf(rest.c_str(), "%lf;%lf", &w, &k) == 2) {
+            return std::make_unique<OptGeoFunctional>(w, k);
         }
         return nullptr;
     }
