@@ -291,7 +291,14 @@ public:
         if (p <= 0.0) return 0.0;
         const double s12 = std::sqrt(p);            // (n_p n_q)^{1/2}
         const double s34 = std::pow(p, 0.75);       // (n_p n_q)^{3/4}
-        return 0.25 * (p + 2.0 * s12 +  s34);
+        // Weights 1 : 1 : 2 on (HF, sqrt, 3/4), i.e. the factor 2 belongs to
+        // the Power(3/4) channel.  This matches the documented kernel, the
+        // ``kernel_grad`` below, and the (c1,c2,c3)=(1/4,1/4,1/2) channel
+        // weights used by ``update_occupations_geo`` in the solver.  (A prior
+        // version erroneously placed the factor 2 on the sqrt term, which left
+        // the reported GEO energy inconsistent with its own occupations while
+        // still, coincidentally, giving K_GEO(1,1)=1.)
+        return 0.25 * (p + s12 + 2.0 * s34);
     }
     double kernel_grad(double ni, double nj) const override {
         // d K / d n_i with n_j held fixed.  Differentiate term by term:
