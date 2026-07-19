@@ -151,13 +151,13 @@ $$
 | **BBC1** | 弱–弱占据对 $\sqrt{n_in_j}$ 带**光滑**符号翻转 | 演示非乘积、梯度难；`smooth` 默认 $0.05$ |
 | **BBC3** | 弱–弱 / 强–强 / 其余三种规则 + 光滑化 | HEG 上等价 BBC2 型配对规则 |
 
-**GEO 实现（与 `GEOFunctional::kernel` 一致）**：令 $p=n_in_j$，
+**GEO 实现（与 `GEOFunctional::kernel`、`kernel_grad` 及求解器 `update_occupations_geo` 一致）**：令 $p=n_in_j$，
 
 $$
-K_{\mathrm{GEO}} = \frac{1}{4}\,p + \frac{1}{2}\,p^{1/2} + \frac{1}{4}\,p^{3/4}\quad (p>0),\quad K_{\mathrm{GEO}}(0,\cdot)=0.
+K_{\mathrm{GEO}} = \frac{1}{4}\,p + \frac{1}{4}\,p^{1/2} + \frac{1}{2}\,p^{3/4}\quad (p>0),\quad K_{\mathrm{GEO}}(0,\cdot)=0.
 $$
 
-即三条通道 $(n_in_j,\,(n_in_j)^{1/2},\,(n_in_j)^{3/4})$ 的权重为 **$(w_1,w_2,w_3)=(1/4,\,1/2,\,1/4)$**，且 $K(1,1)=1$。**注意**：`GEOFunctional` 类上方个别英文注释块曾写另一种系数顺序，以 **上述代码公式** 为准。
+即三条通道 $(n_in_j,\,(n_in_j)^{1/2},\,(n_in_j)^{3/4})$ 的权重为 **$(w_1,w_2,w_3)=(1/4,\,1/4,\,1/2)$**（HF : Müller : Power(3/4) $=1:1:2$），且 $K(1,1)=1$。**历史修订**：早期 `GEOFunctional::kernel` 误把因子 $2$ 放在 $p^{1/2}$（Müller）通道上，得到 $(1/4,1/2,1/4)$，而 `kernel_grad` 与求解器的通道权重 $(c_1,c_2,c_3)=(1/4,1/4,1/2)$ 一直是 $1:1:2$。这使得**能量**与**占据数**用了不同的核（虽然二者都恰好满足 $K(1,1)=1$，掩盖了问题）。现已将 `kernel` 修正为与梯度、求解器一致的 $1:1:2$，见 `include/Functional.hpp` 注释与 `docs/algorithm_review.md`。
 
 **HybOpt** 与 **OptGeo** 的 CLI：`HybOpt@lambda;alpha`、`OptGeo@a;b;c`（分号分隔，shell 中常需引号）。
 
