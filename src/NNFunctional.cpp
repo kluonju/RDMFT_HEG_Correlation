@@ -1,12 +1,17 @@
 #include "NNFunctional.hpp"
 
 #include <cctype>
+#include <cmath>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
 namespace rdmft {
 namespace {
+
+constexpr std::size_t kMaxHiddenLayers = 64;
+constexpr std::size_t kMaxModelParameters = 10'000'000;
 
 void skip_ws(const std::string& s, std::size_t& i) {
     while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
@@ -23,20 +28,83 @@ bool match(const std::string& s, std::size_t& i, char c) {
 
 double parse_number(const std::string& s, std::size_t& i) {
     skip_ws(s, i);
-    std::size_t start = i;
-    if (i < s.size() && (s[i] == '-' || s[i] == '+')) ++i;
-    while (i < s.size() &&
-           (std::isdigit(static_cast<unsigned char>(s[i])) || s[i] == '.' ||
-            s[i] == 'e' || s[i] == 'E' || s[i] == '-' || s[i] == '+')) {
+    const std::size_t start = i;
+    if (i < s.size() && s[i] == '-') ++i;
+    if (i >= s.size()) {
+        throw std::runtime_error(
+            "expected number in NN JSON at pos " + std::to_string(start));
+    }
+    if (s[i] == '0') {
         ++i;
+    } else {
+        const std::size_t integer_start = i;
+        while (i < s.size()
+               && std::isdigit(static_cast<unsigned char>(s[i]))) {
+            ++i;
+        }
+        if (i == integer_start) {
+            throw std::runtime_error(
+                "expected number in NN JSON at pos " + std::to_string(start));
+        }
+    }
+    if (i < s.size() && s[i] == '.') {
+        ++i;
+        const std::size_t fraction_start = i;
+        while (i < s.size()
+               && std::isdigit(static_cast<unsigned char>(s[i]))) {
+            ++i;
+        }
+        if (i == fraction_start) {
+            throw std::runtime_error(
+                "invalid fraction in NN JSON at pos " + std::to_string(start));
+        }
+    }
+    if (i < s.size() && (s[i] == 'e' || s[i] == 'E')) {
+        ++i;
+        if (i < s.size() && (s[i] == '-' || s[i] == '+')) ++i;
+        const std::size_t exponent_start = i;
+        while (i < s.size()
+               && std::isdigit(static_cast<unsigned char>(s[i]))) {
+            ++i;
+        }
+        if (i == exponent_start) {
+            throw std::runtime_error(
+                "invalid exponent in NN JSON at pos " + std::to_string(start));
+        }
     }
     if (start == i) {
         throw std::runtime_error("expected number in NN JSON at pos " + std::to_string(i));
     }
-    return std::stod(s.substr(start, i - start));
+    std::size_t parsed = 0;
+    double value = 0.0;
+    try {
+        value = std::stod(s.substr(start, i - start), &parsed);
+    } catch (const std::exception&) {
+        throw std::runtime_error(
+            "invalid number in NN JSON at pos " + std::to_string(start));
+    }
+    if (parsed != i - start || !std::isfinite(value)) {
+        throw std::runtime_error(
+            "NN JSON numbers must be finite at pos " + std::to_string(start));
+    }
+    return value;
 }
 
-std::vector<double> parse_array(const std::string& s, std::size_t& i) {
+std::size_t parse_dimension(const std::string& s, std::size_t& i,
+                            const char* label) {
+    const double value = parse_number(s, i);
+    if (value < 1.0 || std::floor(value) != value
+        || value >= static_cast<double>(
+            std::numeric_limits<std::size_t>::max())) {
+        throw std::runtime_error(
+            std::string("NN JSON: ") + label + " must be a positive integer");
+    }
+    return static_cast<std::size_t>(value);
+}
+
+std::vector<double> parse_array(
+    const std::string& s, std::size_t& i,
+    std::size_t max_elements = std::numeric_limits<std::size_t>::max()) {
     if (!match(s, i, '[')) {
         throw std::runtime_error("expected '[' in NN JSON");
     }
@@ -44,6 +112,9 @@ std::vector<double> parse_array(const std::string& s, std::size_t& i) {
     skip_ws(s, i);
     if (match(s, i, ']')) return out;
     for (;;) {
+        if (out.size() >= max_elements) {
+            throw std::runtime_error("NN JSON array has too many elements");
+        }
         out.push_back(parse_number(s, i));
         skip_ws(s, i);
         if (match(s, i, ']')) break;
@@ -54,7 +125,10 @@ std::vector<double> parse_array(const std::string& s, std::size_t& i) {
     return out;
 }
 
-std::vector<std::vector<double>> parse_matrix(const std::string& s, std::size_t& i) {
+std::vector<std::vector<double>> parse_matrix(
+    const std::string& s, std::size_t& i,
+    std::size_t max_rows = std::numeric_limits<std::size_t>::max(),
+    std::size_t max_columns = std::numeric_limits<std::size_t>::max()) {
     if (!match(s, i, '[')) {
         throw std::runtime_error("expected '[' for matrix in NN JSON");
     }
@@ -62,7 +136,10 @@ std::vector<std::vector<double>> parse_matrix(const std::string& s, std::size_t&
     skip_ws(s, i);
     if (match(s, i, ']')) return rows;
     for (;;) {
-        rows.push_back(parse_array(s, i));
+        if (rows.size() >= max_rows) {
+            throw std::runtime_error("NN JSON matrix has too many rows");
+        }
+        rows.push_back(parse_array(s, i, max_columns));
         skip_ws(s, i);
         if (match(s, i, ']')) break;
         if (!match(s, i, ',')) {
@@ -79,13 +156,18 @@ std::string read_file(const std::string& path) {
     }
     std::ostringstream ss;
     ss << in.rdbuf();
+    if (!in.eof() && in.fail()) {
+        throw std::runtime_error("cannot read NN model file: " + path);
+    }
     return ss.str();
 }
 
-std::size_t find_key_after(const std::string& s, std::size_t start, const std::string& key) {
+std::size_t find_key_after(const std::string& s, std::size_t start,
+                           const std::string& key,
+                           std::size_t end = std::string::npos) {
     const std::string quoted = "\"" + key + "\"";
     const auto pos = s.find(quoted, start);
-    if (pos == std::string::npos) {
+    if (pos == std::string::npos || (end != std::string::npos && pos >= end)) {
         throw std::runtime_error("NN JSON missing key: " + key);
     }
     return pos + quoted.size();
@@ -107,26 +189,55 @@ struct LayerData {
 
 LayerData parse_layer_object(const std::string& json,
                              std::size_t& pos,
-                             std::size_t expected_in) {
+                             std::size_t expected_in,
+                             std::size_t expected_out) {
     skip_ws(json, pos);
     const std::size_t obj_start = pos;
     if (!match(json, pos, '{')) {
         throw std::runtime_error("NN JSON: expected kernel object");
     }
+    const std::size_t obj_end = json.find('}', pos);
+    if (obj_end == std::string::npos) {
+        throw std::runtime_error("NN JSON: expected '}' after kernel");
+    }
+    auto value_position = [&](const char* key) {
+        std::size_t key_pos =
+            find_key_after(json, obj_start, key, obj_end);
+        key_pos = json.find(':', key_pos);
+        if (key_pos == std::string::npos || key_pos >= obj_end) {
+            throw std::runtime_error(
+                std::string("NN JSON: missing ':' after ") + key);
+        }
+        return key_pos + 1;
+    };
+
     LayerData L;
-    std::size_t kp = find_key_after(json, obj_start, "in");
-    kp = json.find(':', kp);
-    L.in_dim = static_cast<std::size_t>(parse_number(json, ++kp));
-    kp = find_key_after(json, obj_start, "out");
-    kp = json.find(':', kp);
-    L.out_dim = static_cast<std::size_t>(parse_number(json, ++kp));
+    std::size_t kp = value_position("in");
+    L.in_dim = parse_dimension(json, kp, "layer input dimension");
+    kp = value_position("out");
+    L.out_dim = parse_dimension(json, kp, "layer output dimension");
     if (L.in_dim != expected_in) {
         throw std::runtime_error("NN JSON: layer input dimension mismatch");
     }
+    if (L.out_dim != expected_out) {
+        throw std::runtime_error("NN JSON: layer output dimension mismatch");
+    }
 
-    kp = find_key_after(json, obj_start, "W");
+    if (L.out_dim > std::numeric_limits<std::size_t>::max() / L.in_dim
+        || L.out_dim * L.in_dim > std::vector<double>().max_size()
+        || L.out_dim * L.in_dim > kMaxModelParameters) {
+        throw std::runtime_error("NN JSON: layer matrix dimensions are too large");
+    }
+
+    kp = value_position("W");
     kp = json.find('[', kp);
-    const auto Wmat = parse_matrix(json, kp);
+    if (kp == std::string::npos || kp >= obj_end) {
+        throw std::runtime_error("NN JSON: malformed W matrix");
+    }
+    const auto Wmat = parse_matrix(json, kp, L.out_dim, L.in_dim);
+    if (kp > obj_end) {
+        throw std::runtime_error("NN JSON: W matrix extends beyond layer object");
+    }
     if (Wmat.size() != L.out_dim) {
         throw std::runtime_error("NN JSON: W row count mismatch");
     }
@@ -140,18 +251,20 @@ LayerData parse_layer_object(const std::string& json,
         }
     }
 
-    kp = find_key_after(json, obj_start, "b");
+    kp = value_position("b");
     kp = json.find('[', kp);
-    L.b = parse_array(json, kp);
+    if (kp == std::string::npos || kp >= obj_end) {
+        throw std::runtime_error("NN JSON: malformed bias array");
+    }
+    L.b = parse_array(json, kp, L.out_dim);
+    if (kp > obj_end) {
+        throw std::runtime_error("NN JSON: bias array extends beyond layer object");
+    }
     if (L.b.size() != L.out_dim) {
         throw std::runtime_error("NN JSON: bias length mismatch");
     }
 
-    pos = json.find('}', kp);
-    if (pos == std::string::npos) {
-        throw std::runtime_error("NN JSON: expected '}' after kernel");
-    }
-    ++pos;
+    pos = obj_end + 1;
     return L;
 }
 
@@ -159,12 +272,28 @@ void parse_mlp_block(const std::string& json,
                      std::size_t input_dim,
                      std::vector<LayerData>& layers,
                      double& out_bias) {
+    layers.clear();
     std::size_t pos = find_key(json, "hidden");
     pos = json.find('[', pos);
     if (pos == std::string::npos) {
         throw std::runtime_error("NN JSON: hidden sizes not found");
     }
-    const auto hidden = parse_array(json, pos);
+    const auto hidden_values =
+        parse_array(json, pos, kMaxHiddenLayers);
+    if (hidden_values.size() > kMaxHiddenLayers) {
+        throw std::runtime_error("NN JSON: too many hidden layers");
+    }
+    std::vector<std::size_t> hidden;
+    hidden.reserve(hidden_values.size());
+    for (double value : hidden_values) {
+        if (value < 1.0 || std::floor(value) != value
+            || value >= static_cast<double>(
+                std::numeric_limits<std::size_t>::max())) {
+            throw std::runtime_error(
+                "NN JSON: hidden dimensions must be positive integers");
+        }
+        hidden.push_back(static_cast<std::size_t>(value));
+    }
 
     pos = find_key(json, "kernels");
     pos = json.find('[', pos);
@@ -177,49 +306,70 @@ void parse_mlp_block(const std::string& json,
 
     std::size_t expected_in = input_dim;
     for (std::size_t ell = 0; ell < hidden.size() + 1; ++ell) {
-        LayerData L = parse_layer_object(json, pos, expected_in);
+        const std::size_t expected_out =
+            (ell < hidden.size()) ? hidden[ell] : 1u;
+        LayerData L =
+            parse_layer_object(json, pos, expected_in, expected_out);
         expected_in = L.out_dim;
         layers.push_back(std::move(L));
         skip_ws(json, pos);
-        if (match(json, pos, ',')) continue;
-        if (match(json, pos, ']')) break;
-        throw std::runtime_error("NN JSON: expected ',' or ']' after kernel");
-    }
-    if (layers.size() != hidden.size() + 1) {
-        throw std::runtime_error("NN JSON: kernel count != hidden.size()+1");
-    }
-    if (!layers.empty() && layers.back().out_dim != 1) {
-        throw std::runtime_error("NN JSON: top-level output must be scalar (out=1)");
+        if (ell + 1 < hidden.size() + 1) {
+            if (!match(json, pos, ',')) {
+                throw std::runtime_error(
+                    "NN JSON: expected ',' between kernel layers");
+            }
+        } else if (!match(json, pos, ']')) {
+            throw std::runtime_error(
+                "NN JSON: kernel count does not match hidden dimensions");
+        }
     }
 
     pos = find_key(json, "out_bias");
     pos = json.find(':', pos);
+    if (pos == std::string::npos) {
+        throw std::runtime_error("NN JSON: malformed out_bias");
+    }
     out_bias = parse_number(json, ++pos);
 }
 
+std::string parse_optional_string(const std::string& json,
+                                  const std::string& key,
+                                  const std::string& default_value = {}) {
+    const std::string quoted_key = "\"" + key + "\"";
+    const std::size_t key_pos = json.find(quoted_key);
+    if (key_pos == std::string::npos) return default_value;
+    std::size_t pos = key_pos + quoted_key.size();
+    skip_ws(json, pos);
+    if (pos >= json.size() || json[pos] != ':') {
+        throw std::runtime_error("NN JSON: malformed string field " + key);
+    }
+    ++pos;
+    skip_ws(json, pos);
+    if (pos >= json.size() || json[pos] != '"') {
+        throw std::runtime_error("NN JSON: field " + key + " must be a string");
+    }
+    const std::size_t value_start = ++pos;
+    bool escaped = false;
+    for (; pos < json.size(); ++pos) {
+        if (!escaped && json[pos] == '"') {
+            return json.substr(value_start, pos - value_start);
+        }
+        if (!escaped && json[pos] == '\\') {
+            escaped = true;
+        } else {
+            escaped = false;
+        }
+    }
+    throw std::runtime_error("NN JSON: unterminated string field " + key);
+}
+
 std::string parse_optional_name(const std::string& json) {
-    const auto qpos = json.find("\"name\"");
-    if (qpos == std::string::npos) return {};
-    auto colon = json.find(':', qpos);
-    if (colon == std::string::npos) return {};
-    auto q1 = json.find('"', colon + 1);
-    if (q1 == std::string::npos) return {};
-    auto q2 = json.find('"', q1 + 1);
-    if (q2 == std::string::npos) return {};
-    return json.substr(q1 + 1, q2 - q1 - 1);
+    return parse_optional_string(json, "name");
 }
 
 std::string parse_kernel_type(const std::string& json,
                               const std::string& default_value) {
-    const auto qpos = json.find("\"kernel_type\"");
-    if (qpos == std::string::npos) return default_value;
-    auto colon = json.find(':', qpos);
-    if (colon == std::string::npos) return default_value;
-    auto q1 = json.find('"', colon + 1);
-    if (q1 == std::string::npos) return default_value;
-    auto q2 = json.find('"', q1 + 1);
-    if (q2 == std::string::npos) return default_value;
-    return json.substr(q1 + 1, q2 - q1 - 1);
+    return parse_optional_string(json, "kernel_type", default_value);
 }
 
 }  // namespace
@@ -227,96 +377,24 @@ std::string parse_kernel_type(const std::string& json,
 NNFunctional::NNFunctional(std::string model_path)
     : model_path_(std::move(model_path)) {
     const std::string json = read_file(model_path_);
-    std::size_t pos = find_key(json, "name");
-    pos = json.find(':', pos);
-    if (pos != std::string::npos) {
-        pos = json.find('"', pos + 1);
-        if (pos != std::string::npos) {
-            const std::size_t end = json.find('"', pos + 1);
-            if (end != std::string::npos) {
-                name_ = json.substr(pos + 1, end - pos - 1);
-            }
-        }
+    const std::string kernel_type = parse_kernel_type(json, "separable");
+    if (kernel_type != "separable" && !kernel_type.empty()) {
+        throw std::runtime_error(
+            "NN JSON: NNFunctional requires kernel_type \"separable\"");
     }
+    name_ = parse_optional_name(json);
     if (name_.empty()) name_ = "NN";
-
-    pos = find_key(json, "hidden");
-    pos = json.find('[', pos);
-    if (pos == std::string::npos) {
-        throw std::runtime_error("NN JSON: hidden sizes not found");
+    std::vector<LayerData> raw;
+    parse_mlp_block(json, /*input_dim=*/1, raw, out_bias_);
+    layers_.reserve(raw.size());
+    for (auto& source : raw) {
+        Layer layer;
+        layer.in_dim = source.in_dim;
+        layer.out_dim = source.out_dim;
+        layer.W = std::move(source.W);
+        layer.b = std::move(source.b);
+        layers_.push_back(std::move(layer));
     }
-    const auto hidden = parse_array(json, pos);
-
-    pos = find_key(json, "kernels");
-    pos = json.find('[', pos);
-    if (pos == std::string::npos) {
-        throw std::runtime_error("NN JSON: kernels array not found");
-    }
-    if (!match(json, pos, '[')) {
-        throw std::runtime_error("NN JSON: malformed kernels");
-    }
-
-    std::size_t expected_in = 1;
-    for (std::size_t ell = 0; ell < hidden.size() + 1; ++ell) {
-        skip_ws(json, pos);
-        const std::size_t obj_start = pos;
-        if (!match(json, pos, '{')) {
-            throw std::runtime_error("NN JSON: expected kernel object");
-        }
-        Layer L;
-        std::size_t kp = find_key_after(json, obj_start, "in");
-        kp = json.find(':', kp);
-        L.in_dim = static_cast<std::size_t>(parse_number(json, ++kp));
-        kp = find_key_after(json, obj_start, "out");
-        kp = json.find(':', kp);
-        L.out_dim = static_cast<std::size_t>(parse_number(json, ++kp));
-        if (L.in_dim != expected_in) {
-            throw std::runtime_error("NN JSON: layer input dimension mismatch");
-        }
-        expected_in = L.out_dim;
-
-        kp = find_key_after(json, obj_start, "W");
-        kp = json.find('[', kp);
-        const auto Wmat = parse_matrix(json, kp);
-        if (Wmat.size() != L.out_dim) {
-            throw std::runtime_error("NN JSON: W row count mismatch");
-        }
-        L.W.resize(L.out_dim * L.in_dim);
-        for (std::size_t r = 0; r < L.out_dim; ++r) {
-            if (Wmat[r].size() != L.in_dim) {
-                throw std::runtime_error("NN JSON: W column count mismatch");
-            }
-            for (std::size_t c = 0; c < L.in_dim; ++c) {
-                L.W[r * L.in_dim + c] = Wmat[r][c];
-            }
-        }
-
-        kp = find_key_after(json, obj_start, "b");
-        kp = json.find('[', kp);
-        L.b = parse_array(json, kp);
-        if (L.b.size() != L.out_dim) {
-            throw std::runtime_error("NN JSON: bias length mismatch");
-        }
-
-        pos = json.find('}', kp);
-        if (pos == std::string::npos) {
-            throw std::runtime_error("NN JSON: expected '}' after kernel");
-        }
-        ++pos;
-        layers_.push_back(std::move(L));
-        skip_ws(json, pos);
-        if (match(json, pos, ',')) continue;
-        if (match(json, pos, ']')) break;
-        throw std::runtime_error("NN JSON: expected ',' or ']' after kernel");
-    }
-
-    if (layers_.size() != hidden.size() + 1) {
-        throw std::runtime_error("NN JSON: kernel count != hidden.size()+1");
-    }
-
-    pos = find_key(json, "out_bias");
-    pos = json.find(':', pos);
-    out_bias_ = parse_number(json, ++pos);
 }
 
 double NNFunctional::softplus(double x) const {
@@ -371,11 +449,40 @@ double NNFunctional::f(double n) const {
 }
 
 double NNFunctional::df(double n) const {
-    if (n <= 0.0) return 0.0;
+    if (n < 0.0) return 0.0;
 
-    constexpr double eps = 1.0e-7;
-    const double h = std::max(eps, 1.0e-5 * std::max(n, 1.0));
-    return (f(n + h) - f(n - h)) / (2.0 * h);
+    std::vector<double> values(1, n);
+    std::vector<double> derivatives(1, 1.0);
+    std::vector<double> next_values;
+    std::vector<double> next_derivatives;
+    for (std::size_t ell = 0; ell < layers_.size(); ++ell) {
+        const Layer& layer = layers_[ell];
+        next_values.assign(layer.out_dim, 0.0);
+        next_derivatives.assign(layer.out_dim, 0.0);
+        for (std::size_t out = 0; out < layer.out_dim; ++out) {
+            double z = layer.b[out];
+            double dz = 0.0;
+            const double* weights = &layer.W[out * layer.in_dim];
+            for (std::size_t in = 0; in < layer.in_dim; ++in) {
+                z += weights[in] * values[in];
+                dz += weights[in] * derivatives[in];
+            }
+            if (ell + 1 < layers_.size()) {
+                const double activation = std::tanh(z);
+                next_values[out] = activation;
+                next_derivatives[out] =
+                    (1.0 - activation * activation) * dz;
+            } else {
+                next_values[out] = z;
+                next_derivatives[out] = dz;
+            }
+        }
+        values.swap(next_values);
+        derivatives.swap(next_derivatives);
+    }
+    const double raw = out_bias_ + values[0];
+    const double draw = derivatives[0];
+    return softplus(raw) + n * sigmoid(raw) * draw;
 }
 
 std::unique_ptr<NNFunctional> make_nn_functional(const std::string& json_path) {
@@ -389,6 +496,10 @@ std::unique_ptr<NNFunctional> make_nn_functional(const std::string& json_path) {
 NNPairFunctional::NNPairFunctional(std::string model_path)
     : model_path_(std::move(model_path)) {
     const std::string json = read_file(model_path_);
+    if (parse_kernel_type(json, "separable") != "pair") {
+        throw std::runtime_error(
+            "NN JSON: NNPairFunctional requires kernel_type \"pair\"");
+    }
     name_ = parse_optional_name(json);
     if (name_.empty()) name_ = "NNPair";
     std::vector<LayerData> raw;

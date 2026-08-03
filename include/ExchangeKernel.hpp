@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include "Grid.hpp"
@@ -38,6 +40,22 @@ struct ExchangeKernel {
 
     static ExchangeKernel build(const Grid& g) {
         const std::size_t N = g.n();
+        if (N < 2 || g.w.size() != N) {
+            throw std::invalid_argument(
+                "ExchangeKernel requires matching grid nodes and weights");
+        }
+        if (N > std::numeric_limits<std::size_t>::max() / N
+            || N * N > std::vector<double>().max_size()) {
+            throw std::length_error("exchange-kernel matrix size overflows");
+        }
+        for (std::size_t i = 0; i < N; ++i) {
+            if (!std::isfinite(g.k[i]) || !std::isfinite(g.w[i])
+                || g.k[i] < 0.0 || g.w[i] < 0.0
+                || (i > 0 && g.k[i] <= g.k[i - 1])) {
+                throw std::invalid_argument(
+                    "ExchangeKernel requires finite, increasing non-negative grid data");
+            }
+        }
         ExchangeKernel K;
         K.N = N;
         K.W.assign(N * N, 0.0);
@@ -122,6 +140,10 @@ struct ExchangeKernel {
                 //   phi_1(k') = (k' - a) / h     -> contributes to node s+1
                 const double w_left  = (b * M0 - M1) / h;
                 const double w_right = (M1 - a * M0) / h;
+                if (!std::isfinite(w_left) || !std::isfinite(w_right)) {
+                    throw std::overflow_error(
+                        "non-finite exchange product-integration weight");
+                }
                 K.W[i * N + s]       += w_left;
                 K.W[i * N + s + 1]   += w_right;
             }

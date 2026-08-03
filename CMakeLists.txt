@@ -54,6 +54,9 @@ set_tests_properties(solver_robustness PROPERTIES
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
 )
 
+add_executable(test_boundaries tests/test_boundaries.cpp)
+add_test(NAME boundaries COMMAND test_boundaries)
+
 # Helper binary used by scripts/plot_gz.py to render the
 # Gori-Giorgi/Ziesche n(k, rs) parametrization (paper Fig. 6).
 add_executable(dump_gz_grid

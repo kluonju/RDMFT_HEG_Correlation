@@ -536,6 +536,7 @@ solve_rdmft(double rs,
     const GEOFunctional*    geo       = dynamic_cast<const GEOFunctional*>(&F);
     const OptGeoFunctional* optgeo    = dynamic_cast<const OptGeoFunctional*>(&F);
     const HybOptFunctional* hybopt = dynamic_cast<const HybOptFunctional*>(&F);
+    const BBC1Functional*   bbc1      = dynamic_cast<const BBC1Functional*>(&F);
     const BBC3Functional*   bbc3      = dynamic_cast<const BBC3Functional*>(&F);
     const BOWFunctional*    bow       = dynamic_cast<const BOWFunctional*>(&F);
 
@@ -594,7 +595,8 @@ solve_rdmft(double rs,
     // hybopt / BBC3 escape the trivial HF-step fixed point.
     const bool needs_multistart = additive || (geo != nullptr)
                                   || (optgeo != nullptr) || (hybopt != nullptr)
-                                  || (bbc3 != nullptr) || (bow != nullptr);
+                                  || (bbc1 != nullptr) || (bbc3 != nullptr)
+                                  || (bow != nullptr);
     const bool uniform_init = opt.init_uniform_n.has_value();
     const std::vector<std::pair<bool, double>> starts = uniform_init
         ? std::vector<std::pair<bool, double>>{{true, 0.0}}

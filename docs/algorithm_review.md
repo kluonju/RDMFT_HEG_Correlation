@@ -273,16 +273,15 @@ times if the bracket is too tight). ✔ (monotonicity guarantees a unique root).
    $n_i=\bigl[R/(\alpha U_i)\bigr]^{1/(\alpha-1)}$ clamped to $[0,1]$.
    For HF ($\alpha\to1$) the occupation is a step, smoothed at the single node
    nearest $\mu$ so $\rho(\mu)$ stays continuous for the outer bisection.
-2. **Generic separable** kernels: 1-D bisection of $df(n_i)U_i=R$
-   (`update_occupations_factorized`).
-3. **Additive** $K=a[n_in_j+g(n_i)g(n_j)]$ (CGA $a=\tfrac12$; Beta/CHF $a=1$):
+2. **Additive** $K=a[n_in_j+g(n_i)g(n_j)]$ (CGA $a=\tfrac12$; Beta/CHF $a=1$):
    solve $U^{HF}_i+g'(n_i)U^{g}_i=R/a$ with a dedicated 1-D inverter
    (CGA: $n=1-s/\sqrt{1+s^2}$; Beta: bracketed root of
    $u(1-u^2)^{\beta-1}=B$, $u=1-2n$). ✔
-4. **GEO / OptGeo channel form**: three channel sums $U_{1,2,3}$, LHS strictly
+3. **GEO / OptGeo channel form**: three channel sums $U_{1,2,3}$, LHS strictly
    decreasing in $n_i$ (for $U_\alpha\ge0$), solved by bisection on $(0,1)$.
-5. **HybOpt**: two-channel HF+Power, monotone LHS, bisection.
-6. **Everything else** (BBC1, BBC3, OptGeo sigmoid, BOW, SymBow, NN-pair):
+4. **HybOpt**: two-channel HF+Power, monotone LHS, bisection.
+5. **Everything else** (arbitrary separable kernels including NN, BBC1, BBC3,
+   OptGeo sigmoid, BOW, SymBow, and NN-pair):
    **projected gradient** with **Armijo backtracking** line search
    ($n_i\leftarrow\mathrm{clip}[\,n_i-\text{step}\,(\varepsilon_i-\mu)\,]$,
    step starting at 1 and halved), with an inner $\mu$ bisection per trial
@@ -294,7 +293,7 @@ Linear mixing $n_i\leftarrow(1-\eta)n_i+\eta\,n_i^{\text{target}}$
 ($\eta=$ `mix`); convergence when $\max_i|\Delta n_i|<$ `tol_n`.
 Driver overrides: `tol_n=1e-8`, `max_iter=1200`, `mix=0.40`.
 For kernels with a competing HF-like minimum (additive, GEO/OptGeo, HybOpt,
-BBC3, BOW) the solver runs **several smeared initial guesses** and keeps the
+BBC1/BBC3, BOW) the solver runs **several smeared initial guesses** and keeps the
 **lowest-energy** converged result (variational selection). ✔
 
 ---
@@ -328,7 +327,7 @@ $\beta_3=1.6382$, $\beta_4=0.49294$ — the standard PW92 paramagnetic set. ✔
 | Log-singular product integration ($W$) | ✔ correct (exact for piecewise-linear integrands) |
 | Euler–Lagrange / `pseudo_energy` | ✔ correct; two gradient discretisations consistent |
 | $\mu$ bisection / density constraint | ✔ correct (monotone, adaptive bracket) |
-| Power / factorized / additive / HybOpt occupation updates | ✔ correct closed-form / monotone inversions |
+| Power / additive / HybOpt occupation updates | ✔ correct closed-form / monotone inversions |
 | Projected-gradient + Armijo line search | ✔ energy-monotone, robust |
 | `kernel_grad` vs `kernel` (CGA, Beta, CHF, OptGeo, HybOpt, BOW, SymBow, BBC1, BBC3) | ✔ consistent |
 | **`kernel_grad` vs `kernel` (GEO)** | **✗ fixed** — factor 2 was on the wrong channel |

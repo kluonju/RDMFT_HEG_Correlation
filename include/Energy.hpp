@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include "ExchangeKernel.hpp"
@@ -28,8 +30,31 @@ namespace rdmft {
 // grid's trapezoid weights, and is exact whenever n(k) is piecewise linear
 // on the grid.
 struct EnergyEvaluator {
+    static void validate_grid_vector(const std::vector<double>& n,
+                                     const Grid& g) {
+        if (g.k.size() != g.w.size() || n.size() != g.k.size()) {
+            throw std::invalid_argument(
+                "occupation, grid-node, and grid-weight sizes must match");
+        }
+    }
+
+    static void validate_exchange(const Grid& g, const ExchangeKernel& W) {
+        const std::size_t N = g.n();
+        if (N == 0 || W.N != N
+            || N > std::numeric_limits<std::size_t>::max() / N) {
+            throw std::invalid_argument(
+                "exchange-kernel dimensions do not match the grid");
+        }
+        const std::size_t matrix_size = N * N;
+        if (W.W.size() != matrix_size || W.Wt.size() != matrix_size) {
+            throw std::invalid_argument(
+                "exchange-kernel storage does not match its dimensions");
+        }
+    }
+
     static double kinetic_per_volume(const std::vector<double>& n,
                                      const Grid& g) {
+        validate_grid_vector(n, g);
         constexpr double pi = M_PI;
         double s = 0.0;
         for (std::size_t i = 0; i < g.n(); ++i) {
@@ -40,6 +65,7 @@ struct EnergyEvaluator {
     }
 
     static double density(const std::vector<double>& n, const Grid& g) {
+        validate_grid_vector(n, g);
         constexpr double pi = M_PI;
         double s = 0.0;
         for (std::size_t i = 0; i < g.n(); ++i) {
@@ -56,6 +82,8 @@ struct EnergyEvaluator {
                                        const Grid& g,
                                        const ExchangeKernel& W,
                                        const Functional& F) {
+        validate_grid_vector(n, g);
+        validate_exchange(g, W);
         const std::size_t N = g.n();
         std::vector<double> V(N, 0.0);
         // Fast path: K(n_i,n_j) = f(n_i) f(n_j)  =>  one matvec per SCF step,
@@ -98,6 +126,8 @@ struct EnergyEvaluator {
                                 const Grid& g,
                                 const ExchangeKernel& W,
                                 const Functional& F) {
+        validate_grid_vector(n, g);
+        validate_exchange(g, W);
         constexpr double pi = M_PI;
         const std::size_t N = g.n();
 
@@ -124,6 +154,8 @@ struct EnergyEvaluator {
                                        const Grid& g,
                                        const ExchangeKernel& W,
                                        const Functional& F) {
+        validate_grid_vector(n, g);
+        validate_exchange(g, W);
         constexpr double pi = M_PI;
         const std::size_t N = g.n();
         std::vector<double> de(N, 0.0);

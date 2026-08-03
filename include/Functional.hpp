@@ -756,8 +756,7 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     if (key == "Mueller" || key == "BB") return std::make_unique<MuellerFunctional>();
     if (key == "GU")      return std::make_unique<GUFunctional>();
     if (key == "CGA")     return std::make_unique<CGAFunctional>();
-    // Legacy label ``CHF`` maps to CHF (corrected Hartree–Fock kernel).
-    if (key == "CHF" || key == "CHF") return std::make_unique<CHFFunctional>();
+    if (key == "CHF")     return std::make_unique<CHFFunctional>();
     if (key == "Power")   return std::make_unique<PowerFunctional>(alpha);
     if (key == "BOW")     return std::make_unique<BOWFunctional>();
     if (key == "SymBow")  return std::make_unique<SymBOWFunctional>();
