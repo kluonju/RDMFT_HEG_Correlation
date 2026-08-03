@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <limits>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "Energy.hpp"
@@ -18,6 +20,7 @@ namespace rdmft {
 struct SolveOptions {
     int    max_iter      = 800;
     double tol_n         = 1.0e-9;
+    double tol_rho       = 1.0e-8;
     double mix           = 0.40;
     int    bisect_iter   = 80;
     double mu_lo         = -50.0;
@@ -38,6 +41,7 @@ struct SolveResult {
     double E_per_N   = 0.0;
     int    iters     = 0;
     bool   converged = false;
+    std::string failure_reason;
 };
 
 // For a factorized power kernel f(n) = n^alpha, the inner exchange "potential"
@@ -119,56 +123,6 @@ update_occupations_power(double alpha,
         const double base = R / (alpha * U[i]);  // > 0
         const double cand = std::pow(base, 1.0 / (alpha - 1.0));
         n[i] = std::clamp(cand, 0.0, 1.0);
-    }
-    return n;
-}
-
-// Invert df(n_i) * U_i = pi * k_i * (k_i^2/2 - mu) for generic factorized f(n).
-inline std::vector<double>
-update_occupations_factorized(double mu,
-                              const std::vector<double>& U,
-                              const Grid& g,
-                              const Functional& F) {
-    constexpr double pi = M_PI;
-    const std::size_t N = g.n();
-    std::vector<double> n(N, 0.0);
-
-    auto g_eq = [&](double ni, std::size_t i) {
-        const double k = g.k[i];
-        const double R = pi * k * (0.5 * k * k - mu);
-        return F.df(ni) * U[i] - R;
-    };
-
-    for (std::size_t i = 0; i < N; ++i) {
-        const double k = g.k[i];
-        if (k <= 0.0) {
-            n[i] = 1.0;
-            continue;
-        }
-        const double R = pi * k * (0.5 * k * k - mu);
-        if (U[i] <= 0.0) {
-            n[i] = (R <= 0.0) ? 1.0 : 0.0;
-            continue;
-        }
-        const double g0 = g_eq(0.0, i);
-        const double g1 = g_eq(1.0, i);
-        if (g0 >= 0.0) {
-            n[i] = 0.0;
-            continue;
-        }
-        if (g1 <= 0.0) {
-            n[i] = 1.0;
-            continue;
-        }
-        double lo = 0.0;
-        double hi = 1.0;
-        for (int it = 0; it < 80; ++it) {
-            const double mid = 0.5 * (lo + hi);
-            const double gm = g_eq(mid, i);
-            if (gm < 0.0) lo = mid;
-            else            hi = mid;
-        }
-        n[i] = 0.5 * (lo + hi);
     }
     return n;
 }
@@ -517,8 +471,9 @@ initial_smeared(double rs, const Grid& g, double width = 0.10) {
 
 // Self-consistent solve for any Functional.  Power-family functionals use the
 // closed-form occupation update; CGA, CHF, and Beta use the additive branch
-// with a dedicated 1-D inverter; BBC1, BBC3, GEO / optGeo, and hybopt use projected
-// gradient.  All branches bisect on mu for particle conservation.
+// with a dedicated 1-D inverter.  Other kernels, including arbitrary
+// factorized kernels whose df need not be monotone, use projected gradient.
+// All branches bisect on mu for particle conservation.
 //
 // Beta, CGA, and CHF can show a competing HF-like minimum; we therefore try
 // several smeared initial guesses and keep the lowest-energy converged result
@@ -529,7 +484,36 @@ solve_rdmft(double rs,
             const Grid& g,
             const ExchangeKernel& W,
             const SolveOptions& opt = {}) {
+    if (!std::isfinite(rs) || rs <= 0.0) {
+        throw std::invalid_argument("solve_rdmft requires finite rs > 0");
+    }
+    if (opt.max_iter <= 0 || opt.bisect_iter <= 0
+        || !std::isfinite(opt.tol_n) || opt.tol_n <= 0.0
+        || !std::isfinite(opt.tol_rho) || opt.tol_rho <= 0.0
+        || !std::isfinite(opt.mix) || opt.mix <= 0.0 || opt.mix > 1.0
+        || !std::isfinite(opt.mu_lo) || !std::isfinite(opt.mu_hi)
+        || opt.mu_lo >= opt.mu_hi) {
+        throw std::invalid_argument("invalid SolveOptions");
+    }
+    if (opt.init_uniform_n
+        && (!std::isfinite(*opt.init_uniform_n)
+            || *opt.init_uniform_n < 0.0 || *opt.init_uniform_n > 1.0)) {
+        throw std::invalid_argument("init_uniform_n must be finite and in [0,1]");
+    }
+
     const double rho_target = HEG::density(rs);
+    const double rho_tolerance =
+        opt.tol_rho * std::max(1.0, std::abs(rho_target));
+
+    auto valid_occupations = [&](const std::vector<double>& nv) {
+        if (nv.size() != g.n()) return false;
+        for (double value : nv) {
+            if (!std::isfinite(value) || value < 0.0 || value > 1.0) {
+               return false;
+            }
+        }
+        return true;
+    };
 
     // Detect Power-family functionals.  GU shares the Mueller kernel in the
     // HEG (the orbital self-interaction terms vanish for plane waves), so it
@@ -540,7 +524,6 @@ solve_rdmft(double rs,
     const GUFunctional*      gu_f = dynamic_cast<const GUFunctional*>(&F);
     const bool power_family = (pf != nullptr) || (hf != nullptr)
                             || (mu_f != nullptr) || (gu_f != nullptr);
-    const bool generic_factorized = F.is_factorized() && !power_family;
 
     // Additive kernel: CHF inherits ``BetaFunctional(1/2)``; Beta is general
     // exponent; CGA uses K = (1/2) [ n_i n_j + g_i g_j ] (``CGAFunctional``).
@@ -553,6 +536,7 @@ solve_rdmft(double rs,
     const GEOFunctional*    geo       = dynamic_cast<const GEOFunctional*>(&F);
     const OptGeoFunctional* optgeo    = dynamic_cast<const OptGeoFunctional*>(&F);
     const HybOptFunctional* hybopt = dynamic_cast<const HybOptFunctional*>(&F);
+    const BBC1Functional*   bbc1      = dynamic_cast<const BBC1Functional*>(&F);
     const BBC3Functional*   bbc3      = dynamic_cast<const BBC3Functional*>(&F);
     const BOWFunctional*    bow       = dynamic_cast<const BOWFunctional*>(&F);
 
@@ -565,6 +549,46 @@ solve_rdmft(double rs,
     auto density_of = [&](const std::vector<double>& nv) {
         return EnergyEvaluator::density(nv, g);
     };
+    const std::vector<double> full_occupations(g.n(), 1.0);
+    const double maximum_grid_density = density_of(full_occupations);
+    if (!std::isfinite(maximum_grid_density)
+        || maximum_grid_density + rho_tolerance < rho_target) {
+        SolveResult failed;
+        failed.failure_reason =
+            "chemical-potential search cannot bracket the target density on this grid";
+        return failed;
+    }
+    auto project_to_target_density = [&](std::vector<double>& nv) {
+        if (!valid_occupations(nv)) return false;
+        double lo = -1.0;
+        double hi = 1.0;
+        auto shifted_density = [&](double shift) {
+            double sum = 0.0;
+            constexpr double pi = M_PI;
+            for (std::size_t i = 0; i < g.n(); ++i) {
+                const double value = std::clamp(nv[i] + shift, 0.0, 1.0);
+                sum += g.w[i] * g.k[i] * g.k[i] * value;
+            }
+            return sum / (pi * pi);
+        };
+        for (int b = 0; b < opt.bisect_iter; ++b) {
+            const double mid = 0.5 * (lo + hi);
+            if (shifted_density(mid) > rho_target) hi = mid;
+            else                                    lo = mid;
+        }
+        const double shift = 0.5 * (lo + hi);
+        std::vector<double> projected = nv;
+        for (double& value : projected) {
+            value = std::clamp(value + shift, 0.0, 1.0);
+        }
+        const double rho = density_of(projected);
+        if (!valid_occupations(projected) || !std::isfinite(rho)
+            || std::abs(rho - rho_target) > rho_tolerance) {
+            return false;
+        }
+        nv = std::move(projected);
+        return true;
+    };
 
     // Multi-start strategy for additive kernels: probe several smearing
     // widths and keep the lowest-energy result.  CGA / Beta have a stable
@@ -576,7 +600,8 @@ solve_rdmft(double rs,
     // hybopt / BBC3 escape the trivial HF-step fixed point.
     const bool needs_multistart = additive || (geo != nullptr)
                                   || (optgeo != nullptr) || (hybopt != nullptr)
-                                  || (bbc3 != nullptr) || (bow != nullptr);
+                                  || (bbc1 != nullptr) || (bbc3 != nullptr)
+                                  || (bow != nullptr);
     const bool uniform_init = opt.init_uniform_n.has_value();
     const std::vector<std::pair<bool, double>> starts = uniform_init
         ? std::vector<std::pair<bool, double>>{{true, 0.0}}
@@ -588,15 +613,24 @@ solve_rdmft(double rs,
 
     SolveResult best;
     bool best_set = false;
+    SolveResult fallback;
+    bool fallback_set = false;
+    std::string last_failure;
     for (const auto& start : starts) {
 
     std::vector<double> n =
         uniform_init ? initial_constant(g, *opt.init_uniform_n)
                      : (start.first ? initial_step(rs, g)
                                     : initial_smeared(rs, g, start.second));
+    if (!project_to_target_density(n)) {
+        last_failure = "failed to project initial occupations to the target density";
+        continue;
+    }
     double mu = 0.5 * HEG::kF(rs) * HEG::kF(rs);
     int it = 0;
     bool converged = false;
+    bool numerical_failure = false;
+    std::string failure_reason;
 
     auto compute_U = [&](const std::vector<double>& nv) {
         const std::size_t N = g.n();
@@ -628,40 +662,72 @@ solve_rdmft(double rs,
     // falling back to the saturated boundary.  This avoids manual
     // --mu-lo/--mu-hi tuning per functional / r_s and lets the optimizer
     // make progress even on bad NN weights.
+    struct BisectionResult {
+        bool success = false;
+        double mu = 0.0;
+        std::string error;
+    };
     auto adaptive_bisect = [&](auto update_n) {
+        BisectionResult result;
         double lo = opt.mu_lo;
         double hi = opt.mu_hi;
         const int max_expand = 16;
-        double rho_lo = density_of(update_n(lo));
-        double rho_hi = density_of(update_n(hi));
+        auto evaluate = [&](double trial_mu, double& rho) {
+            const auto trial = update_n(trial_mu);
+            if (!valid_occupations(trial)) return false;
+            rho = density_of(trial);
+            return std::isfinite(rho);
+        };
+        double rho_lo = 0.0;
+        double rho_hi = 0.0;
+        if (!evaluate(lo, rho_lo) || !evaluate(hi, rho_hi)) {
+            result.error = "chemical-potential bracketing produced non-finite occupations";
+            return result;
+        }
         for (int e = 0; e < max_expand; ++e) {
             if (rho_lo <= rho_target && rho_hi >= rho_target) break;
             const double span = std::max(hi - lo, 1.0);
             if (rho_lo > rho_target) {
                 lo -= span;
-                rho_lo = density_of(update_n(lo));
+                if (!std::isfinite(lo) || !evaluate(lo, rho_lo)) {
+                    result.error = "chemical-potential lower-bracket expansion failed";
+                    return result;
+                }
             }
             if (rho_hi < rho_target) {
                 hi += span;
-                rho_hi = density_of(update_n(hi));
+                if (!std::isfinite(hi) || !evaluate(hi, rho_hi)) {
+                    result.error = "chemical-potential upper-bracket expansion failed";
+                    return result;
+                }
             }
+        }
+        if (rho_lo > rho_hi) {
+            result.error = "occupation update is not monotone in chemical potential";
+            return result;
+        }
+        if (rho_lo > rho_target || rho_hi < rho_target) {
+            result.error = "chemical-potential search could not bracket the target density";
+            return result;
         }
         for (int b = 0; b < opt.bisect_iter; ++b) {
             const double m = 0.5 * (lo + hi);
-            if (density_of(update_n(m)) > rho_target) hi = m;
-            else                                       lo = m;
+            double rho_mid = 0.0;
+            if (!evaluate(m, rho_mid)) {
+                result.error = "chemical-potential bisection produced non-finite occupations";
+                return result;
+            }
+            if (rho_mid > rho_target) hi = m;
+            else                       lo = m;
         }
-        return 0.5 * (lo + hi);
+        result.success = true;
+        result.mu = 0.5 * (lo + hi);
+        return result;
     };
 
     auto bisect_mu_factorized = [&](const std::vector<double>& U) {
         return adaptive_bisect(
             [&](double m) { return update_occupations_power(alpha, m, U, g); });
-    };
-
-    auto bisect_mu_generic_factorized = [&](const std::vector<double>& U) {
-        return adaptive_bisect(
-            [&](double m) { return update_occupations_factorized(m, U, g, F); });
     };
 
     // Pick the appropriate hole inverter for additive kernels.
@@ -678,12 +744,14 @@ solve_rdmft(double rs,
 
         if (power_family) {
             auto U = compute_U(n);
-            mu = bisect_mu_factorized(U);
+            const auto bracket = bisect_mu_factorized(U);
+            if (!bracket.success) {
+                failure_reason = bracket.error;
+                numerical_failure = true;
+                break;
+            }
+            mu = bracket.mu;
             n_target = update_occupations_power(alpha, mu, U, g);
-        } else if (generic_factorized) {
-            auto U = compute_U(n);
-            mu = bisect_mu_generic_factorized(U);
-            n_target = update_occupations_factorized(mu, U, g, F);
         } else if (hybopt) {
             const double lam = hybopt->lambda_mix();
             const double al = hybopt->alpha();
@@ -697,9 +765,15 @@ solve_rdmft(double rs,
             auto U2 = compute_U_with(n, g, W, f_pow);
             const double c1 = 1.0 - lam;
             const double c2 = lam;
-            mu = adaptive_bisect([&](double m) {
+            const auto bracket = adaptive_bisect([&](double m) {
                 return update_occupations_hf_power_mix(m, U1, U2, g, c1, c2, al);
             });
+            if (!bracket.success) {
+                failure_reason = bracket.error;
+                numerical_failure = true;
+                break;
+            }
+            mu = bracket.mu;
             n_target = update_occupations_hf_power_mix(mu, U1, U2, g, c1, c2, al);
         } else if (geo) {
             auto f1 = [](double nn) { return nn; };
@@ -709,9 +783,15 @@ solve_rdmft(double rs,
             auto U2 = compute_U_with(n, g, W, f2);
             auto U3 = compute_U_with(n, g, W, f3);
 
-            mu = adaptive_bisect([&](double m) {
+            const auto bracket = adaptive_bisect([&](double m) {
                 return update_occupations_geo(m, U1, U2, U3, g);
             });
+            if (!bracket.success) {
+                failure_reason = bracket.error;
+                numerical_failure = true;
+                break;
+            }
+            mu = bracket.mu;
             n_target = update_occupations_geo(mu, U1, U2, U3, g);
         } else if (additive) {
             // Additive kernel K = n_i n_j + g(n_i) g(n_j): closed-form update
@@ -737,10 +817,16 @@ solve_rdmft(double rs,
             auto U_HF = compute_U_with(n, g, W, identity_id);
             auto U_g  = compute_U_with(n, g, W, g_of);
 
-            mu = adaptive_bisect([&](double m) {
+            const auto bracket = adaptive_bisect([&](double m) {
                 return update_occupations_additive(
                     m, U_HF, U_g, g, invert_dg, el_scale);
             });
+            if (!bracket.success) {
+                failure_reason = bracket.error;
+                numerical_failure = true;
+                break;
+            }
+            mu = bracket.mu;
             n_target = update_occupations_additive(
                 mu, U_HF, U_g, g, invert_dg, el_scale);
         } else {
@@ -751,6 +837,19 @@ solve_rdmft(double rs,
             auto eps = EnergyEvaluator::pseudo_energy(n, g, W, F);
             const double E0 = EnergyEvaluator::kinetic_per_volume(n, g)
                             + EnergyEvaluator::xc_per_volume(n, g, W, F);
+            if (!std::isfinite(E0)) {
+                failure_reason = "projected-gradient energy is non-finite";
+                numerical_failure = true;
+                break;
+            }
+            for (double value : eps) {
+                if (!std::isfinite(value)) {
+                    failure_reason = "projected-gradient derivative is non-finite";
+                    numerical_failure = true;
+                    break;
+                }
+            }
+            if (numerical_failure) break;
             const double c_armijo = 1.0e-4;
             const double shrink = 0.5;
             const double min_step = 1.0e-8;
@@ -762,16 +861,17 @@ solve_rdmft(double rs,
                 }
                 return n_try;
             };
-            auto project_for_step = [&](double step, double& mu_step) {
-                double lo = opt.mu_lo, hi = opt.mu_hi;
-                for (int b = 0; b < opt.bisect_iter; ++b) {
-                    const double m = 0.5 * (lo + hi);
-                    auto n_try = pgd_at(step, m);
-                    if (density_of(n_try) > rho_target) hi = m;
-                    else                                 lo = m;
+            auto project_for_step = [&](double step, double& mu_step,
+                                        std::vector<double>& projected) {
+                const auto bracket = adaptive_bisect(
+                    [&](double m) { return pgd_at(step, m); });
+                if (!bracket.success) {
+                    failure_reason = bracket.error;
+                    return false;
                 }
-                mu_step = 0.5 * (lo + hi);
-                return pgd_at(step, mu_step);
+                mu_step = bracket.mu;
+                projected = pgd_at(step, mu_step);
+                return valid_occupations(projected);
             };
             auto directional_derivative = [&](const std::vector<double>& n_try) {
                 constexpr double pi = M_PI;
@@ -791,10 +891,19 @@ solve_rdmft(double rs,
             bool accepted = false;
             while (step >= min_step) {
                 double trial_mu = mu;
-                auto trial = project_for_step(step, trial_mu);
+                std::vector<double> trial;
+                if (!project_for_step(step, trial_mu, trial)) {
+                    numerical_failure = true;
+                    break;
+                }
                 const double E_trial = EnergyEvaluator::kinetic_per_volume(trial, g)
                                      + EnergyEvaluator::xc_per_volume(trial, g, W, F);
                 const double gd = directional_derivative(trial);
+                if (!std::isfinite(E_trial) || !std::isfinite(gd)) {
+                    failure_reason = "projected-gradient line search is non-finite";
+                    numerical_failure = true;
+                    break;
+                }
                 const double armijo_rhs = E0 + c_armijo * std::min(gd, 0.0);
                 if (E_trial < best_E) {
                     best_E = E_trial;
@@ -809,6 +918,7 @@ solve_rdmft(double rs,
                 }
                 step *= shrink;
             }
+            if (numerical_failure) break;
             if (!accepted) {
                 if (best_E < E0) {
                     n_target = std::move(best_n);
@@ -821,21 +931,43 @@ solve_rdmft(double rs,
             }
         }
 
+        if (!valid_occupations(n_target)) {
+            failure_reason = "occupation update produced invalid values";
+            numerical_failure = true;
+            break;
+        }
         double dn_max = 0.0;
         for (std::size_t i = 0; i < g.n(); ++i) {
             const double n_new = (1.0 - opt.mix) * n[i] + opt.mix * n_target[i];
+            if (!std::isfinite(n_new)) {
+                failure_reason = "occupation mixing produced non-finite values";
+                numerical_failure = true;
+                break;
+            }
             dn_max = std::max(dn_max, std::abs(n_new - n[i]));
             n[i] = n_new;
         }
+        if (numerical_failure) break;
 
+        const double rho_now = density_of(n);
+        if (!std::isfinite(rho_now)) {
+            failure_reason = "density became non-finite";
+            numerical_failure = true;
+            break;
+        }
         if (opt.verbose && (it % 20 == 0)) {
             double Eh = EnergyEvaluator::kinetic_per_volume(n, g)
                       + EnergyEvaluator::xc_per_volume(n, g, W, F);
             std::fprintf(stderr,
                 "    [iter %4d]  mu=%+.6f  rho=%.6e  dn=%.2e  E/V=%+.6e\n",
-                it, mu, density_of(n), dn_max, Eh);
+                it, mu, rho_now, dn_max, Eh);
         }
-        if (dn_max < opt.tol_n) { converged = true; ++it; break; }
+        if (dn_max < opt.tol_n
+            && std::abs(rho_now - rho_target) <= rho_tolerance) {
+            converged = true;
+            ++it;
+            break;
+        }
     }
 
     SolveResult res;
@@ -847,18 +979,56 @@ solve_rdmft(double rs,
     res.E_per_V   = res.T_per_V + res.Exc_per_V;
     res.E_per_N   = (res.rho > 0.0) ? res.E_per_V / res.rho : 0.0;
     res.iters     = it;
-    res.converged = converged;
+    const bool finite_result =
+        valid_occupations(res.n) && std::isfinite(res.mu)
+        && std::isfinite(res.rho) && std::isfinite(res.T_per_V)
+        && std::isfinite(res.Exc_per_V) && std::isfinite(res.E_per_V)
+        && std::isfinite(res.E_per_N);
+    const bool density_ok =
+        finite_result && std::abs(res.rho - rho_target) <= rho_tolerance;
+    res.converged = converged && !numerical_failure && density_ok;
+    if (!res.converged) {
+        if (failure_reason.empty()) {
+            failure_reason = numerical_failure
+                ? "numerical failure"
+                : "maximum iterations reached before occupation and density convergence";
+        }
+        res.failure_reason = failure_reason;
+        last_failure = failure_reason;
+    }
 
     // Variational selection: among all the start configurations tried,
-    // keep the one that minimizes the total energy and is consistent with
-    // the density constraint.
-    if (!best_set || res.E_per_N < best.E_per_N) {
+    // keep the lowest-energy valid, converged result.  A finite unconverged
+    // result is retained only as a diagnostic fallback if every start fails.
+    if (res.converged && (!best_set || res.E_per_N < best.E_per_N)) {
         best = res;
         best_set = true;
+    } else if (!res.converged && finite_result) {
+        const double rho_err = std::abs(res.rho - rho_target);
+        const double fallback_rho_err = fallback_set
+            ? std::abs(fallback.rho - rho_target)
+            : std::numeric_limits<double>::infinity();
+        if (!fallback_set || rho_err < fallback_rho_err
+            || (rho_err == fallback_rho_err && res.E_per_N < fallback.E_per_N)) {
+            fallback = res;
+            fallback_set = true;
+        }
     }
     }  // end multi-start loop
 
-    return best_set ? best : SolveResult{};
+    if (best_set) return best;
+    if (fallback_set) {
+        fallback.converged = false;
+        if (fallback.failure_reason.empty()) {
+            fallback.failure_reason = "no valid converged multistart result";
+        }
+        return fallback;
+    }
+    SolveResult failed;
+    failed.failure_reason = last_failure.empty()
+        ? "no finite solver result"
+        : last_failure;
+    return failed;
 }
 
 }  // namespace rdmft

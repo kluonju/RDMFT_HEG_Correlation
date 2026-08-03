@@ -44,6 +44,28 @@ add_executable(test_nn_functional
     src/NNFunctional.cpp
 )
 add_test(NAME nn_functional COMMAND test_nn_functional)
+set_tests_properties(nn_functional PROPERTIES
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+)
+
+add_executable(test_solver_robustness tests/test_solver_robustness.cpp)
+add_test(NAME solver_robustness COMMAND test_solver_robustness)
+set_tests_properties(solver_robustness PROPERTIES
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+)
+
+add_executable(test_boundaries tests/test_boundaries.cpp)
+add_test(NAME boundaries COMMAND test_boundaries)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME cli_validation
+        COMMAND ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/test_cli.py
+                $<TARGET_FILE:rdmft_heg>
+    )
+endif()
 
 # Helper binary used by scripts/plot_gz.py to render the
 # Gori-Giorgi/Ziesche n(k, rs) parametrization (paper Fig. 6).

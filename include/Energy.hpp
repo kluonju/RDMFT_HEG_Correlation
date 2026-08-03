@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include "ExchangeKernel.hpp"
@@ -28,8 +30,32 @@ namespace rdmft {
 // grid's trapezoid weights, and is exact whenever n(k) is piecewise linear
 // on the grid.
 struct EnergyEvaluator {
+    static void validate_grid_vector(const std::vector<double>& n,
+                                     const Grid& g) {
+        if (g.k.empty() || g.k.size() != g.w.size()
+            || n.size() != g.k.size()) {
+            throw std::invalid_argument(
+                "occupation, grid-node, and grid-weight sizes must match");
+        }
+    }
+
+    static void validate_exchange(const Grid& g, const ExchangeKernel& W) {
+        const std::size_t N = g.n();
+        if (N == 0 || W.N != N
+            || N > std::numeric_limits<std::size_t>::max() / N) {
+            throw std::invalid_argument(
+                "exchange-kernel dimensions do not match the grid");
+        }
+        const std::size_t matrix_size = N * N;
+        if (W.W.size() != matrix_size || W.Wt.size() != matrix_size) {
+            throw std::invalid_argument(
+                "exchange-kernel storage does not match its dimensions");
+        }
+    }
+
     static double kinetic_per_volume(const std::vector<double>& n,
                                      const Grid& g) {
+        validate_grid_vector(n, g);
         constexpr double pi = M_PI;
         double s = 0.0;
         for (std::size_t i = 0; i < g.n(); ++i) {
@@ -40,6 +66,7 @@ struct EnergyEvaluator {
     }
 
     static double density(const std::vector<double>& n, const Grid& g) {
+        validate_grid_vector(n, g);
         constexpr double pi = M_PI;
         double s = 0.0;
         for (std::size_t i = 0; i < g.n(); ++i) {
@@ -56,6 +83,8 @@ struct EnergyEvaluator {
                                        const Grid& g,
                                        const ExchangeKernel& W,
                                        const Functional& F) {
+        validate_grid_vector(n, g);
+        validate_exchange(g, W);
         const std::size_t N = g.n();
         std::vector<double> V(N, 0.0);
         // Fast path: K(n_i,n_j) = f(n_i) f(n_j)  =>  one matvec per SCF step,
@@ -98,6 +127,8 @@ struct EnergyEvaluator {
                                 const Grid& g,
                                 const ExchangeKernel& W,
                                 const Functional& F) {
+        validate_grid_vector(n, g);
+        validate_exchange(g, W);
         constexpr double pi = M_PI;
         const std::size_t N = g.n();
 
@@ -115,49 +146,65 @@ struct EnergyEvaluator {
     //
     //   d(E_xc)/dn_i =  -(1/(2 pi^3)) * \sum_j w_i k_i W_{ij} k_j (dK/dn_i)
     //                   -(1/(2 pi^3)) * \sum_j w_j k_j W_{ji} k_i (dK/dn_j_at_i)
-    // For symmetric kernel K(a,b) = K(b,a): both pieces equal, so
-    //   d(E_xc)/dn_i = -(1/pi^3) * k_i * \sum_j w_j W_{ji} k_j (partial_K wrt arg-1)(n_j, n_i)
-    //                 [using K's symmetry to evaluate at n_j, n_i]
+    // For symmetric kernel K(a,b) = K(b,a), both derivatives can be written
+    // with partial_K wrt arg-1 at (n_i,n_j).  We retain both discrete terms
+    // rather than assuming weighted symmetry of W, so this is the exact
+    // derivative of xc_per_volume on any supported grid.
     // We use the convention: F.kernel_grad(a, b) = dK/da at (a, b), and we
     // assume the kernel is symmetric (true for HF, Mueller, Power, BBC1).
     static std::vector<double> deps_xc(const std::vector<double>& n,
                                        const Grid& g,
                                        const ExchangeKernel& W,
                                        const Functional& F) {
+        validate_grid_vector(n, g);
+        validate_exchange(g, W);
         constexpr double pi = M_PI;
         const std::size_t N = g.n();
         std::vector<double> de(N, 0.0);
         if (F.is_factorized()) {
-            std::vector<double> wf(N);
+            std::vector<double> kf(N);
+            std::vector<double> wkf(N);
             for (std::size_t j = 0; j < N; ++j) {
-                wf[j] = g.w[j] * g.k[j] * F.f(n[j]);
+                kf[j] = g.k[j] * F.f(n[j]);
+                wkf[j] = g.w[j] * kf[j];
             }
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) if (N > 96)
 #endif
             for (std::size_t i = 0; i < N; ++i) {
                 const double ki = g.k[i];
-                const double* row = W.wt_row(i);
-                double s = 0.0;
+                const double* direct_row = W.w_row(i);
+                const double* transpose_row = W.wt_row(i);
+                double direct = 0.0;
+                double transpose = 0.0;
                 for (std::size_t j = 0; j < N; ++j) {
-                    s += row[j] * wf[j];
+                    direct += direct_row[j] * kf[j];
+                    transpose += transpose_row[j] * wkf[j];
                 }
-                de[i] = -ki * F.df(n[i]) * s / (pi * pi * pi);
+                de[i] = -0.5 * ki * F.df(n[i])
+                      * (g.w[i] * direct + transpose)
+                      / (pi * pi * pi);
             }
             return de;
         }
-        // General kernel: use W^T row for contiguous access (W(j,i) = Wt(i,j)).
+        // General kernel: include both appearances of n_i in the symmetric
+        // double sum. W and W^T rows keep both inner traversals contiguous.
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) if (N > 64)
 #endif
         for (std::size_t i = 0; i < N; ++i) {
             const double ki = g.k[i];
-            const double* row = W.wt_row(i);
-            double s = 0.0;
+            const double* direct_row = W.w_row(i);
+            const double* transpose_row = W.wt_row(i);
+            double direct = 0.0;
+            double transpose = 0.0;
             for (std::size_t j = 0; j < N; ++j) {
-                s += g.w[j] * g.k[j] * row[j] * F.kernel_grad(n[i], n[j]);
+                const double gradient = F.kernel_grad(n[i], n[j]);
+                direct += direct_row[j] * g.k[j] * gradient;
+                transpose += g.w[j] * g.k[j] * transpose_row[j] * gradient;
             }
-            de[i] = -ki * s / (pi * pi * pi);
+            de[i] = -0.5 * ki * (g.w[i] * direct + transpose)
+                  / (pi * pi * pi);
         }
         return de;
     }

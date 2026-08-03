@@ -62,6 +62,15 @@ int main() {
     SolveResult r = solve_rdmft(rs, F, g, W, opt);
     std::printf("Self-consistent HF: E/N=%.8f  vs analytic=%.8f\n",
                 r.E_per_N, t_ref + x_ref);
+    if (!r.converged) {
+        std::fprintf(stderr, "FAIL: HF solver did not converge: %s\n",
+                     r.failure_reason.c_str());
+        return 1;
+    }
+    if (std::abs(r.rho - HEG::density(rs)) > 1.0e-8) {
+        std::fprintf(stderr, "FAIL: HF solver density mismatch.\n");
+        return 1;
+    }
     if (std::abs(r.E_per_N - (t_ref + x_ref)) > 5.0e-3) {
         std::fprintf(stderr, "FAIL: HF self-consistent energy mismatch.\n");
         return 1;

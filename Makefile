@@ -35,6 +35,8 @@ SRCS     := src/main.cpp src/MomentumDistributionGZ.cpp src/NNFunctional.cpp
 TARGET   := $(BIN_DIR)/rdmft_heg
 TEST_BIN := $(BIN_DIR)/test_hf_exchange
 TEST_GZ_BIN := $(BIN_DIR)/test_gz_momentum
+TEST_SOLVER_BIN := $(BIN_DIR)/test_solver_robustness
+TEST_BOUNDARIES_BIN := $(BIN_DIR)/test_boundaries
 DUMP_GZ_BIN := $(BIN_DIR)/dump_gz_grid
 
 HEADERS := $(wildcard include/*.hpp)
@@ -60,7 +62,8 @@ NN_HIDDEN ?= 4,4
 .PHONY: all run rerun geo optgeo hybopt plot plot-gz nk-data plot-nk plot-nk-optgeo plot-nk-hybopt \
         prepare-nn-data optimize-nn-gz optimize-nn-pair-gz plot-nk-nn test clean clean-data
 
-all: $(TARGET) $(TEST_BIN) $(TEST_GZ_BIN) $(TEST_NN_BIN) $(DUMP_GZ_BIN)
+all: $(TARGET) $(TEST_BIN) $(TEST_GZ_BIN) $(TEST_NN_BIN) $(TEST_SOLVER_BIN) \
+	$(TEST_BOUNDARIES_BIN) $(DUMP_GZ_BIN)
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
@@ -79,6 +82,12 @@ $(DUMP_GZ_BIN): tools/dump_gz_grid.cpp src/MomentumDistributionGZ.cpp $(HEADERS)
 
 $(TEST_NN_BIN): tests/test_nn_functional.cpp src/NNFunctional.cpp $(HEADERS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_nn_functional.cpp src/NNFunctional.cpp -o $@
+
+$(TEST_SOLVER_BIN): tests/test_solver_robustness.cpp $(HEADERS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_solver_robustness.cpp -o $@
+
+$(TEST_BOUNDARIES_BIN): tests/test_boundaries.cpp $(HEADERS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_boundaries.cpp -o $@
 
 # Incremental sweep: skip functionals whose data/<name>.tsv already exists.
 # Adding a new functional therefore only runs that functional, leaving the
@@ -200,10 +209,14 @@ plot-nk-nn: $(DUMP_GZ_BIN)
 	python3 scripts/plot_nk_nn.py --dump-gz $(DUMP_GZ_BIN) \
 		--nk-dir $(NN_BEST_DIR)/nk --out figures/nk_nn_vs_gz.png
 
-test: $(TEST_BIN) $(TEST_GZ_BIN) $(TEST_NN_BIN) $(DUMP_GZ_BIN)
+test: $(TEST_BIN) $(TEST_GZ_BIN) $(TEST_NN_BIN) $(TEST_SOLVER_BIN) \
+	$(TEST_BOUNDARIES_BIN) $(DUMP_GZ_BIN)
 	./$(TEST_BIN)
 	./$(TEST_GZ_BIN)
 	./$(TEST_NN_BIN)
+	./$(TEST_SOLVER_BIN)
+	./$(TEST_BOUNDARIES_BIN)
+	python3 tests/test_cli.py ./$(TARGET)
 
 clean:
 	rm -rf $(BIN_DIR)

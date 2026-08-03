@@ -2,11 +2,17 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
+#include "ExchangeKernel.hpp"
 #include "Functional.hpp"
+#include "Grid.hpp"
+#include "HEG.hpp"
 #include "NNFunctional.hpp"
+#include "Solver.hpp"
 
 using namespace rdmft;
 
@@ -26,7 +32,36 @@ static void check_near(double a, double b, double tol, const char* msg) {
     }
 }
 
+static void check_model_rejected(const std::string& json, const char* msg) {
+    static int counter = 0;
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path()
+        / ("rdmft_invalid_nn_" + std::to_string(counter++) + ".json");
+    {
+        std::ofstream out(path);
+        out << json;
+    }
+    bool rejected = false;
+    try {
+        (void)load_nn_functional(path.string());
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+    check(rejected, msg);
+}
+
 int main() {
+    {
+        std::unique_ptr<Functional> functional =
+            make_functional("HybOpt@1.0;0.5");
+        const auto* hybrid =
+            dynamic_cast<const HybOptFunctional*>(functional.get());
+        check(hybrid != nullptr && hybrid->lambda_mix() == 1.0,
+              "HybOpt factory preserves lambda=1");
+    }
+
     const std::string path = "tests/fixtures/nn_power055.json";
     std::unique_ptr<Functional> F = load_nn_functional(path);
     if (!F) {
@@ -37,6 +72,8 @@ int main() {
     check(nn != nullptr, "dynamic_cast to NNFunctional");
 
     check_near(F->f(0.0), 0.0, 1e-14, "f(0)=0");
+    check(std::isfinite(F->df(0.0)) && F->df(0.0) > 0.0,
+          "df(0) is the finite right derivative");
 
     const double n_test = 0.42;
     const double h = 1e-7;
@@ -46,6 +83,23 @@ int main() {
     // Smoke: f(n) positive on (0,1]
     for (double n = 0.05; n <= 1.0; n += 0.1) {
         check(F->f(n) >= 0.0, "f(n) >= 0");
+    }
+
+    {
+        const double rs = 2.0;
+        Grid grid = Grid::uniform_trapezoid(3.0 * HEG::kF(rs), 41);
+        ExchangeKernel exchange = ExchangeKernel::build(grid);
+        SolveOptions options;
+        options.max_iter = 400;
+        options.tol_n = 1.0e-7;
+        options.tol_rho = 1.0e-7;
+        const SolveResult result =
+            solve_rdmft(rs, *F, grid, exchange, options);
+        check(result.converged, "generic NN functional solve converges");
+        check(std::isfinite(result.E_per_N), "generic NN solve energy is finite");
+        check(std::abs(result.rho - HEG::density(rs))
+                  <= options.tol_rho * std::max(1.0, HEG::density(rs)),
+              "generic NN solve satisfies the density constraint");
     }
 
     // -------- NNPairFunctional checks --------------------------------------
@@ -81,6 +135,16 @@ int main() {
         (P->kernel(a0 + dh, b0) - P->kernel(a0 - dh, b0)) / (2.0 * dh);
     check_near(P->kernel_grad(a0, b0), fd_ab, 5e-3,
                "NNPair: kernel_grad vs central difference");
+
+    check_model_rejected(
+        R"({"hidden":[1.5],"kernels":[],"out_bias":0})",
+        "fractional hidden dimensions are rejected");
+    check_model_rejected(
+        R"({"hidden":[],"kernels":[{"in":1,"out":1,"W":[[1e9999]],"b":[0]}],"out_bias":0})",
+        "non-finite model weights are rejected");
+    check_model_rejected(
+        R"({"hidden":[2],"kernels":[{"in":1,"out":3}],"out_bias":0})",
+        "declared layer dimensions must match hidden dimensions");
 
     if (failures == 0) {
         std::cout << "test_nn_functional: all checks passed\n";

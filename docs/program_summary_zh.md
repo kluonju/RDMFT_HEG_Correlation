@@ -123,10 +123,13 @@ $$
 对称核 $K(a,b)=K(b,a)$ 时，
 
 $$
-\frac{\partial (E_{xc}/V)}{\partial n_i} = -\frac{k_i}{\pi^3}\sum_j w_j\,W_{ji}\,k_j\,\frac{\partial K}{\partial n_i}(n_j,n_i),
+\frac{\partial (E_{xc}/V)}{\partial n_i}
+=-\frac{k_i}{2\pi^3}\left[
+w_i\sum_j W_{ij}k_jK_1(n_i,n_j)
++\sum_jw_jk_jW_{ji}K_1(n_i,n_j)\right],
 $$
 
-其中 $\partial K/\partial n_i$ 由 `Functional::kernel_grad(n_i,n_j)` 给出（因子化情形有专用快速路径）。
+其中 $K_1=\partial K/\partial n_i$ 由 `Functional::kernel_grad(n_i,n_j)` 给出；两项分别来自离散双重求和中 $n_i$ 作为核的第一、第二自变量，因而这是离散能量的精确梯度（因子化情形有专用快速路径）。
 
 **物理约束**：内点 $0<n_i<1$ 时 $\varepsilon_i=\mu$；$n_i=0$ 对应 $\varepsilon_i>\mu$，$n_i=1$ 对应 $\varepsilon_i<\mu$（KKT 型互补）。
 
@@ -147,7 +150,7 @@ $$
 | **Beta($\beta$)** | $K=n_in_j+\bigl[n_i(1-n_i)n_j(1-n_j)\bigr]^\beta$ | $\beta\to\infty$ 趋向 HF 空穴关闭；$\beta=\frac12$ 即 CHF |
 | **GEO** | 见下式 **(实现)** | 三通道非乘积核 |
 | **OptGeo** | $K=w_1 n_in_j+w_2(n_in_j)^{1/2}+w_3(n_in_j)^{3/4}$ | $w_k$ 由球面角 $(a,b,c)$ 平方归一化：$w_1=a^2/\|\cdot\|^2$ 等 |
-| **HybOpt** | $(1-\lambda)n_in_j+\lambda n_i^\alpha n_j^\alpha$ | $\lambda\in[0,1]$；$\alpha\in(0,1)$（边界数值钳制） |
+| **HybOpt** | $(1-\lambda)n_in_j+\lambda n_i^\alpha n_j^\alpha$ | $\lambda\in[0,1]$；$\alpha\in(0,1)$（越界或非有限参数会被拒绝） |
 | **BBC1** | 弱–弱占据对 $\sqrt{n_in_j}$ 带**光滑**符号翻转 | 演示非乘积、梯度难；`smooth` 默认 $0.05$ |
 | **BBC3** | 弱–弱 / 强–强 / 其余三种规则 + 光滑化 | HEG 上等价 BBC2 型配对规则 |
 
@@ -183,11 +186,11 @@ $$
    - CGA：$g(n)=\sqrt{n(2-n)}$，$g'(n)$ 的反解有闭式 $n=1-s/\sqrt{1+s^2}$。  
    - Beta：对 $u=1-2n$ 一维单调方程用二分 `invert_dgbeta`。
 
-3. **GEO / OptGeo**：对三条通道 $f_1=n,\,f_2=\sqrt{n},\,f_3=n^{3/4}$ 分别算 $U_{1},U_{2},U_{3}$；EL 左侧对 $n_i$ **单调递减**（在 $U_\alpha\ge 0$ 时），对 $n_i\in(0,1)$ **二分**求根；若 $U$ 全为零则退回 HF 型阶跃规则。
+3. **GEO**：对三条通道 $f_1=n,\,f_2=\sqrt{n},\,f_3=n^{3/4}$ 分别算 $U_{1},U_{2},U_{3}$；EL 左侧对 $n_i$ **单调递减**（在 $U_\alpha\ge 0$ 时），对 $n_i\in(0,1)$ **二分**求根；若 $U$ 全为零则退回 HF 型阶跃规则。
 
 4. **HybOpt**：两通道 HF + Power，LHS 对 $n$ 单调时用二分（`update_occupations_hf_power_mix` + 专用 $\mu$ 二分）。
 
-5. **通用分支（如 BBC1）**：**投影梯度**（步长代码中固定 `0.10`）：$n_i\leftarrow\mathrm{clip}\bigl(n_i-\mathrm{step}\cdot(\varepsilon_i-\mu)\bigr)$，内层仍配合 $\mu$ 二分以满足 $\rho$。
+5. **通用分支**（任意可分离核如 NN，以及 OptGeo、BBC1/BBC3、BOW、SymBow、NN-pair）：**投影梯度 + Armijo 回溯线搜索**（初始步长 `1.0`，逐次减半）：$n_i\leftarrow\mathrm{clip}\bigl(n_i-\mathrm{step}\cdot(\varepsilon_i-\mu)\bigr)$，每个候选步内层仍配合 $\mu$ 二分以满足 $\rho$。
 
 ### 7.3 线性混合
 
@@ -195,14 +198,14 @@ $$
 n_i \leftarrow (1-\eta)\,n_i + \eta\, n_i^{\mathrm{target}},\qquad \eta=\texttt{mix}.
 $$
 
-- `SolveOptions` 默认：`mix=0.4`，`max\_iter=800`，`tol\_n=10^{-9}`。  
+- `SolveOptions` 默认：`mix=0.4`，`max\_iter=800`，`tol\_n=10^{-9}`，`tol\_rho=10^{-8}`。
 - **`main.cpp` 调用处**覆盖为：`tol_n=10^{-8}`，`max_iter=1200`，`mix=0.4`。**以驱动为准**。
 
-收敛判据：$\max_i|n_i^{\mathrm{new}}-n_i|$ 小于 `tol_n`。
+收敛判据：$\max_i|n_i^{\mathrm{new}}-n_i|$ 小于 `tol_n`，且密度误差不超过按目标密度缩放的 `tol_rho`。
 
 ### 7.4 多起点与亚稳态
 
-对 **可加型**（CGA/Beta，含 CHF）、**GEO/OptGeo**、**HybOpt**、**BBC3** 等，`needs_multistart` 为真：在「HF 阶跃」与多种宽度参数的 **Fermi 型抹阶** `initial_smeared` 之间多起点尝试；**保留每电子总能量 $E/N$ 最低**的收敛解（变分择优）。
+对 **可加型**（CGA/Beta，含 CHF）、**GEO/OptGeo**、**HybOpt**、**BBC1/BBC3**、BOW 等，`needs_multistart` 为真：在「HF 阶跃」与多种宽度参数的 **Fermi 型抹阶** `initial_smeared` 之间多起点尝试；仅在满足有限性、占据边界与密度约束的收敛解中，**保留每电子总能量 $E/N$ 最低**者（变分择优）。
 
 **可加型技巧**：计算空穴通道 $U_g$ 时对 $n$ 用软钳制 $n\in[n_{\mathrm{floor}},1-n_{\mathrm{floor}}]$（代码中 $n_{\mathrm{floor}}=10^{-6}$）计算 $g(n)$，使 $g'$ 在饱和端不发散、帮助离开 HF 型局域极小；**能量仍用未钳制的 $n$**。
 

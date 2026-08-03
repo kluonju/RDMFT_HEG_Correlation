@@ -4,7 +4,9 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace rdmft {
 
@@ -78,7 +80,11 @@ public:
 // Recommended values around alpha ~ 0.55 - 0.58 for the HEG.
 class PowerFunctional : public Functional {
 public:
-    explicit PowerFunctional(double alpha) : alpha_(alpha) {}
+    explicit PowerFunctional(double alpha) : alpha_(alpha) {
+        if (!std::isfinite(alpha_) || alpha_ <= 0.0 || alpha_ > 1.0) {
+            throw std::invalid_argument("Power alpha must be finite and in (0,1]");
+        }
+    }
     std::string name() const override {
         return "Power(alpha=" + std::to_string(alpha_) + ")";
     }
@@ -190,7 +196,11 @@ private:
 // and lets the user fit the QMC reference for the HEG.
 class BetaFunctional : public Functional {
 public:
-    explicit BetaFunctional(double beta) : beta_(beta) {}
+    explicit BetaFunctional(double beta) : beta_(beta) {
+        if (!std::isfinite(beta_) || beta_ <= 0.0 || beta_ > 1.0) {
+            throw std::invalid_argument("Beta exponent must be finite and in (0,1]");
+        }
+    }
     bool is_factorized() const override { return false; }
     std::string name() const override {
         // Use a compact, parseable label so that downstream scripts can
@@ -333,7 +343,12 @@ public:
 class OptGeoFunctional : public Functional {
 public:
     explicit OptGeoFunctional(double w, double k)
-        : w_(std::max(0.0, w)), k_(std::max(0.0, k)) {}
+        : w_(w), k_(k) {
+        if (!std::isfinite(w_) || !std::isfinite(k_) || w_ < 0.0 || k_ < 0.0) {
+            throw std::invalid_argument(
+                "OptGeo parameters must be finite and non-negative");
+        }
+    }
 
     double w() const { return w_; }
     double k() const { return k_; }
@@ -410,24 +425,24 @@ private:
 //                 + lambda * n_i^alpha * n_j^alpha,
 //
 // i.e. ``(1-lambda) * HF + lambda * Power(alpha)`` in the same JK convention as
-// ``HFFunctional`` / ``PowerFunctional``.  ``lambda`` is clamped to ``[0, 1]``;
-// ``alpha`` must be positive (also capped in the ctor for numerical safety).
+// ``HFFunctional`` / ``PowerFunctional``.  ``lambda`` must lie in ``[0, 1]``
+// and ``alpha`` in ``(0, 1)`` so the specialized EL inversion is monotone.
 //
 // CLI: ``HybOpt@lambda;alpha`` (one semicolon, two floats).  Legacy ``OptGM@...``
 // is accepted as an alias.  Solved via the specialized HF/Power-mix branch in
 // ``solve_rdmft``.
 class HybOptFunctional : public Functional {
 public:
-    explicit HybOptFunctional(double lambda, double alpha) {
-        if (lambda < 0.0)       lambda_ = 0.0;
-        else if (lambda > 1.0) lambda_ = 1.0;
-        else                   lambda_ = lambda;
-        const double eps = 1.0e-14;
-        // α < 1 keeps f'(n) ∝ n^{α-1} decreasing in n so the 2-channel EL
-        // bisection in ``solve_rdmft`` is monotone (same regime as Power fits).
-        if (alpha <= eps)         alpha_ = eps;
-        else if (alpha >= 1.0)    alpha_ = 1.0 - 1.0e-6;
-        else                      alpha_ = alpha;
+    explicit HybOptFunctional(double lambda, double alpha)
+        : lambda_(lambda), alpha_(alpha) {
+        if (!std::isfinite(lambda_) || lambda_ < 0.0 || lambda_ > 1.0) {
+            throw std::invalid_argument(
+                "HybOpt lambda must be finite and in [0,1]");
+        }
+        if (!std::isfinite(alpha_) || alpha_ <= 0.0 || alpha_ >= 1.0) {
+            throw std::invalid_argument(
+                "HybOpt alpha must be finite and in (0,1)");
+        }
     }
 
     double lambda_mix() const { return lambda_; }
@@ -490,7 +505,11 @@ private:
 class BOWFunctional : public Functional {
 public:
     explicit BOWFunctional(double alpha = 0.61)
-        : alpha_(std::max(alpha, 1.0e-8)) {}
+        : alpha_(alpha) {
+        if (!std::isfinite(alpha_) || alpha_ <= 0.0 || alpha_ > 1.0) {
+            throw std::invalid_argument("BOW alpha must be finite and in (0,1]");
+        }
+    }
 
     double alpha() const { return alpha_; }
     bool is_factorized() const override { return false; }
@@ -577,7 +596,11 @@ public:
 // (e.g. tanh) is recommended.
 class BBC1Functional : public Functional {
 public:
-    explicit BBC1Functional(double smooth = 0.05) : smooth_(smooth) {}
+    explicit BBC1Functional(double smooth = 0.05) : smooth_(smooth) {
+        if (!std::isfinite(smooth_) || smooth_ <= 0.0) {
+            throw std::invalid_argument("BBC1 smoothing must be finite and positive");
+        }
+    }
     std::string name() const override { return "BBC1"; }
     bool is_factorized() const override { return false; }
     double f(double n) const override {
@@ -627,7 +650,11 @@ private:
 // ``kernel_grad`` in the projected-gradient solver.
 class BBC3Functional : public Functional {
 public:
-    explicit BBC3Functional(double smooth = 0.05) : smooth_(smooth) {}
+    explicit BBC3Functional(double smooth = 0.05) : smooth_(smooth) {
+        if (!std::isfinite(smooth_) || smooth_ <= 0.0) {
+            throw std::invalid_argument("BBC3 smoothing must be finite and positive");
+        }
+    }
     std::string name() const override { return "BBC3"; }
     bool is_factorized() const override { return false; }
     double f(double n) const override {
@@ -687,6 +714,41 @@ private:
 // Load separable NN kernel from JSON (implemented in src/NNFunctional.cpp).
 std::unique_ptr<Functional> load_nn_functional(const std::string& json_path);
 
+namespace functional_detail {
+
+inline double parse_parameter(const std::string& text, const char* label) {
+    if (text.empty()) {
+        throw std::invalid_argument(std::string(label) + " is empty");
+    }
+    std::size_t parsed = 0;
+    double value = 0.0;
+    try {
+        value = std::stod(text, &parsed);
+    } catch (const std::exception&) {
+        throw std::invalid_argument(std::string("invalid ") + label + ": " + text);
+    }
+    if (parsed != text.size() || !std::isfinite(value)) {
+        throw std::invalid_argument(std::string("invalid ") + label + ": " + text);
+    }
+    return value;
+}
+
+inline std::pair<double, double> parse_parameter_pair(
+    const std::string& text, const char* label) {
+    const std::size_t separator = text.find(';');
+    if (separator == std::string::npos
+        || text.find(';', separator + 1) != std::string::npos) {
+        throw std::invalid_argument(
+            std::string(label) + " requires exactly two ';'-separated values");
+    }
+    return {
+        parse_parameter(text.substr(0, separator), label),
+        parse_parameter(text.substr(separator + 1), label)
+    };
+}
+
+}  // namespace functional_detail
+
 // Convenience factory.
 inline std::unique_ptr<Functional> make_functional(const std::string& key,
                                                    double alpha = 0.55) {
@@ -694,45 +756,45 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     if (key == "Mueller" || key == "BB") return std::make_unique<MuellerFunctional>();
     if (key == "GU")      return std::make_unique<GUFunctional>();
     if (key == "CGA")     return std::make_unique<CGAFunctional>();
-    // Legacy label ``CHF`` maps to CHF (corrected Hartree–Fock kernel).
-    if (key == "CHF" || key == "CHF") return std::make_unique<CHFFunctional>();
+    if (key == "CHF")     return std::make_unique<CHFFunctional>();
     if (key == "Power")   return std::make_unique<PowerFunctional>(alpha);
     if (key == "BOW")     return std::make_unique<BOWFunctional>();
     if (key == "SymBow")  return std::make_unique<SymBOWFunctional>();
     if (key == "BBC1")    return std::make_unique<BBC1Functional>();
     if (key == "BBC3")   return std::make_unique<BBC3Functional>();
     if (key == "GEO")     return std::make_unique<GEOFunctional>();
+    if (key.rfind("Power@", 0) == 0) {
+        return std::make_unique<PowerFunctional>(
+            functional_detail::parse_parameter(key.substr(6), "Power alpha"));
+    }
+    if (key.rfind("Beta@", 0) == 0) {
+        return std::make_unique<BetaFunctional>(
+            functional_detail::parse_parameter(key.substr(5), "Beta exponent"));
+    }
     if (key.rfind("BOW@", 0) == 0) {
-        return std::make_unique<BOWFunctional>(std::stod(key.substr(4)));
+        return std::make_unique<BOWFunctional>(
+            functional_detail::parse_parameter(key.substr(4), "BOW alpha"));
     }
     if (key.rfind("SymBow@", 0) == 0) {
-        return std::make_unique<SymBOWFunctional>(std::stod(key.substr(7)));
+        return std::make_unique<SymBOWFunctional>(
+            functional_detail::parse_parameter(key.substr(7), "SymBow alpha"));
     }
     // OptGeo@w;k — HF + sigmoid correlation in (n-1/2)^2 pair variable.
     if (key.rfind("OptGeo@", 0) == 0) {
-        const std::string rest = key.substr(7);
-        double w = 0.0, k = 0.0;
-        if (std::sscanf(rest.c_str(), "%lf;%lf", &w, &k) == 2) {
-            return std::make_unique<OptGeoFunctional>(w, k);
-        }
-        return nullptr;
+        const auto values = functional_detail::parse_parameter_pair(
+            key.substr(7), "OptGeo");
+        return std::make_unique<OptGeoFunctional>(values.first, values.second);
     }
     // HybOpt@lambda;alpha — HF / Power(alpha) mixture (legacy OptGM@ accepted).
     if (key.rfind("HybOpt@", 0) == 0) {
-        const std::string rest = key.substr(8);
-        double lam = 0.0, al = 0.55;
-        if (std::sscanf(rest.c_str(), "%lf;%lf", &lam, &al) == 2) {
-            return std::make_unique<HybOptFunctional>(lam, al);
-        }
-        return nullptr;
+        const auto values = functional_detail::parse_parameter_pair(
+            key.substr(7), "HybOpt");
+        return std::make_unique<HybOptFunctional>(values.first, values.second);
     }
     if (key.rfind("OptGM@", 0) == 0) {
-        const std::string rest = key.substr(6);
-        double lam = 0.0, al = 0.55;
-        if (std::sscanf(rest.c_str(), "%lf;%lf", &lam, &al) == 2) {
-            return std::make_unique<HybOptFunctional>(lam, al);
-        }
-        return nullptr;
+        const auto values = functional_detail::parse_parameter_pair(
+            key.substr(6), "OptGM");
+        return std::make_unique<HybOptFunctional>(values.first, values.second);
     }
     // The Beta functional needs an explicit exponent; callers should use
     // make_functional("Beta", beta) explicitly (alpha is reused as beta).

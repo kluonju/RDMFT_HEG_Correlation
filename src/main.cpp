@@ -11,18 +11,25 @@
 // are run; there is no built-in default list.
 
 #include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/stat.h>
+#include <system_error>
 #include <vector>
 
 #include "Energy.hpp"
@@ -50,6 +57,7 @@ struct Args {
     std::string nk_out_dir;  // if non-empty, write n(k) TSVs under this directory
     bool   force = false;
     bool   verbose = false;
+    bool   show_help = false;
     // If set, solver seeds n(k) uniformly (clamped to [0,1]); single-start only.
     std::optional<double> init_uniform_n;
 };
@@ -81,67 +89,134 @@ void print_help() {
         "  --help               show this help and exit\n";
 }
 
-std::vector<double> parse_doubles(const std::string& csv) {
-    std::vector<double> out;
-    std::stringstream ss(csv);
-    std::string item;
-    while (std::getline(ss, item, ',')) {
-        if (!item.empty()) out.push_back(std::stod(item));
-    }
-    return out;
+std::string trim(std::string value) {
+    const auto first = std::find_if_not(value.begin(), value.end(),
+        [](unsigned char c) { return std::isspace(c) != 0; });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(),
+        [](unsigned char c) { return std::isspace(c) != 0; }).base();
+    if (first >= last) return {};
+    return std::string(first, last);
 }
-std::vector<std::string> parse_strings(const std::string& csv) {
-    std::vector<std::string> out;
-    std::stringstream ss(csv);
-    std::string item;
-    while (std::getline(ss, item, ',')) {
-        if (!item.empty()) out.push_back(item);
+
+std::vector<std::string> split_csv(const std::string& csv, const char* option) {
+    if (csv.empty()) {
+        throw std::invalid_argument(std::string(option) + " requires a non-empty list");
     }
-    return out;
+    std::vector<std::string> items;
+    std::size_t begin = 0;
+    for (;;) {
+        const std::size_t comma = csv.find(',', begin);
+        const std::size_t end = (comma == std::string::npos) ? csv.size() : comma;
+        std::string item = trim(csv.substr(begin, end - begin));
+        if (item.empty()) {
+            throw std::invalid_argument(
+                std::string(option) + " contains an empty list item");
+        }
+        items.push_back(std::move(item));
+        if (comma == std::string::npos) break;
+        begin = comma + 1;
+    }
+    return items;
+}
+
+double parse_finite_double(const std::string& text, const char* option) {
+    std::size_t parsed = 0;
+    double value = 0.0;
+    try {
+        value = std::stod(text, &parsed);
+    } catch (const std::exception&) {
+        throw std::invalid_argument(std::string(option) + " expects a number");
+    }
+    if (parsed != text.size() || !std::isfinite(value)) {
+        throw std::invalid_argument(
+            std::string(option) + " expects a finite number: " + text);
+    }
+    return value;
+}
+
+int parse_int(const std::string& text, const char* option) {
+    std::size_t parsed = 0;
+    long long value = 0;
+    try {
+        value = std::stoll(text, &parsed);
+    } catch (const std::exception&) {
+        throw std::invalid_argument(std::string(option) + " expects an integer");
+    }
+    if (parsed != text.size()
+        || value < std::numeric_limits<int>::min()
+        || value > std::numeric_limits<int>::max()) {
+        throw std::invalid_argument(std::string(option) + " integer is out of range");
+    }
+    return static_cast<int>(value);
+}
+
+std::vector<double> parse_doubles(const std::string& csv, const char* option) {
+    std::vector<double> values;
+    for (const std::string& item : split_csv(csv, option)) {
+        values.push_back(parse_finite_double(item, option));
+    }
+    return values;
 }
 
 Args parse_args(int argc, char** argv) {
     Args a;
     for (int i = 1; i < argc; ++i) {
         std::string s = argv[i];
-        auto next = [&]() { return std::string(argv[++i]); };
-        if      (s == "--help") { print_help(); std::exit(0); }
-        else if (s == "--rs")        a.rs_list = parse_doubles(next());
-        else if (s == "--funcs")     a.funcs   = parse_strings(next());
-        else if (s == "--N")         a.N_grid  = std::stoi(next());
-        else if (s == "--kmax")      a.k_max_factor = std::stod(next());
+        auto next = [&]() {
+            if (i + 1 >= argc
+                || std::string(argv[i + 1]).rfind("--", 0) == 0) {
+                throw std::invalid_argument("missing value for " + s);
+            }
+            return std::string(argv[++i]);
+        };
+        if      (s == "--help")      a.show_help = true;
+        else if (s == "--rs")        a.rs_list = parse_doubles(next(), "--rs");
+        else if (s == "--funcs")     a.funcs   = split_csv(next(), "--funcs");
+        else if (s == "--N")         a.N_grid  = parse_int(next(), "--N");
+        else if (s == "--kmax")      a.k_max_factor =
+                                          parse_finite_double(next(), "--kmax");
         else if (s == "--out-dir")   a.out_dir = next();
         else if (s == "--nk-out")    a.nk_out_dir = next();
         else if (s == "--force")     a.force   = true;
-        else if (s == "--init-uniform") a.init_uniform_n = std::stod(next());
+        else if (s == "--init-uniform") {
+            a.init_uniform_n = parse_finite_double(next(), "--init-uniform");
+        }
         else if (s == "--verbose")   a.verbose = true;
-        else { std::cerr << "Unknown arg: " << s << "\n"; print_help(); std::exit(1); }
+        else throw std::invalid_argument("unknown argument: " + s);
     }
     return a;
 }
 
-std::unique_ptr<Functional> make(const std::string& key) {
-    if (key.rfind("Power@", 0) == 0) {
-        double alpha = std::stod(key.substr(6));
-        return std::make_unique<PowerFunctional>(alpha);
+void validate_args(const Args& args) {
+    if (args.show_help) return;
+    if (args.N_grid < 3 || (args.N_grid % 2) == 0) {
+        throw std::invalid_argument("--N must be an odd integer of at least 3");
     }
-    if (key.rfind("Beta@", 0) == 0) {
-        double beta = std::stod(key.substr(5));
-        return std::make_unique<BetaFunctional>(beta);
+    if (!std::isfinite(args.k_max_factor) || args.k_max_factor <= 1.0) {
+        throw std::invalid_argument("--kmax must be finite and greater than 1");
     }
-    if (key.rfind("BOW@", 0) == 0) {
-        double alpha = std::stod(key.substr(4));
-        return std::make_unique<BOWFunctional>(alpha);
+    if (args.rs_list.empty()) {
+        throw std::invalid_argument("--rs requires at least one value");
     }
-    if (key.rfind("SymBow@", 0) == 0) {
-        double alpha = std::stod(key.substr(7));
-        return std::make_unique<SymBOWFunctional>(alpha);
+    for (double rs : args.rs_list) {
+        if (!std::isfinite(rs) || rs <= 0.0) {
+            throw std::invalid_argument("--rs values must be finite and positive");
+        }
     }
-    if (key.rfind("OptGeo@", 0) == 0 || key.rfind("HybOpt@", 0) == 0
-        || key.rfind("OptGM@", 0) == 0 || key.rfind("NN@", 0) == 0) {
-        return make_functional(key);
+    if (args.funcs.empty()) {
+        throw std::invalid_argument(
+            "no functionals given; pass --funcs <comma-separated list>");
     }
-    return make_functional(key);
+    if (trim(args.out_dir).empty()) {
+        throw std::invalid_argument("--out-dir must not be empty");
+    }
+    if (!args.nk_out_dir.empty() && trim(args.nk_out_dir).empty()) {
+        throw std::invalid_argument("--nk-out must not be blank");
+    }
+    if (args.init_uniform_n
+        && (*args.init_uniform_n < 0.0 || *args.init_uniform_n > 1.0)) {
+        throw std::invalid_argument("--init-uniform must be in [0,1]");
+    }
 }
 
 // Convert a functional CLI key (e.g. "Power@0.55", "Beta@0.450") into a
@@ -164,6 +239,63 @@ bool file_exists(const std::string& path) {
     return stat(path.c_str(), &st) == 0;
 }
 
+class AtomicOutput {
+public:
+    explicit AtomicOutput(std::filesystem::path final_path)
+        : final_path_(std::move(final_path)) {
+        static std::size_t counter = 0;
+        const auto stamp = std::chrono::steady_clock::now()
+                               .time_since_epoch().count();
+        temp_path_ = final_path_;
+        temp_path_ += ".tmp." + std::to_string(stamp)
+                    + "." + std::to_string(counter++);
+        out_.open(temp_path_, std::ios::out | std::ios::trunc);
+        if (!out_) {
+            throw std::runtime_error(
+                "cannot open temporary output " + temp_path_.string());
+        }
+    }
+
+    AtomicOutput(const AtomicOutput&) = delete;
+    AtomicOutput& operator=(const AtomicOutput&) = delete;
+
+    ~AtomicOutput() {
+        if (!committed_) {
+            out_.close();
+            std::error_code ignored;
+            std::filesystem::remove(temp_path_, ignored);
+        }
+    }
+
+    std::ofstream& stream() { return out_; }
+
+    void commit() {
+        out_.flush();
+        if (!out_) {
+            throw std::runtime_error(
+                "failed writing temporary output " + temp_path_.string());
+        }
+        out_.close();
+        if (out_.fail()) {
+            throw std::runtime_error(
+                "failed closing temporary output " + temp_path_.string());
+        }
+        std::error_code error;
+        std::filesystem::rename(temp_path_, final_path_, error);
+        if (error) {
+            throw std::runtime_error(
+                "cannot publish " + final_path_.string() + ": " + error.message());
+        }
+        committed_ = true;
+    }
+
+private:
+    std::filesystem::path final_path_;
+    std::filesystem::path temp_path_;
+    std::ofstream out_;
+    bool committed_ = false;
+};
+
 // filename_for(key) without trailing ".tsv" (for nk export basename).
 std::string nk_stem_for(const std::string& key) {
     std::string s = filename_for(key);
@@ -175,32 +307,17 @@ std::string nk_stem_for(const std::string& key) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    Args args = parse_args(argc, argv);
-    if (args.N_grid < 3) {
-        std::cerr << "rdmft_heg: --N must be at least 3 for the k grid\n";
-        return 1;
-    }
-    if ((args.N_grid % 2) == 0) {
-        std::cerr << "rdmft_heg: warning: --N must be odd; using " << (args.N_grid - 1)
-                  << " instead of " << args.N_grid << "\n";
-        args.N_grid -= 1;
-    }
-    if (args.N_grid < 3) {
-        std::cerr << "rdmft_heg: after odd correction, --N is too small\n";
-        return 1;
-    }
-    if (args.k_max_factor <= 1.0) {
-        std::cerr << "rdmft_heg: --kmax must be > 1 (need k_max > k_F)\n";
-        return 1;
-    }
-    if (args.funcs.empty()) {
-        std::cerr << "rdmft_heg: no functionals given; pass --funcs <comma-separated list>\n"
-                     "Example: --funcs HF,Mueller,CGA\n";
-        return 1;
+int run(const Args& args) {
+    validate_args(args);
+    if (args.show_help) {
+        print_help();
+        return 0;
     }
 
     std::filesystem::create_directories(args.out_dir);
+    if (!args.nk_out_dir.empty()) {
+        std::filesystem::create_directories(args.nk_out_dir);
+    }
 
     std::cout << std::fixed << std::setprecision(6);
     std::cout << "rs       functional        Ec(Ha)         Ec_QMC(Ha)\n";
@@ -208,70 +325,88 @@ int main(int argc, char** argv) {
 
     int n_written = 0;
     int n_skipped = 0;
+    bool had_errors = false;
 
     for (const std::string& key : args.funcs) {
-        auto F = make(key);
-        if (!F) { std::cerr << "Unknown functional " << key << "\n"; continue; }
+        try {
+            auto F = make_functional(key);
+            if (!F) {
+                throw std::invalid_argument("unknown functional: " + key);
+            }
 
-        const std::string out_path =
-            args.out_dir + "/" + filename_for(key);
-        const bool write_energy = args.force || !file_exists(out_path);
-        const bool export_nk    = !args.nk_out_dir.empty();
+            const std::filesystem::path out_path =
+                std::filesystem::path(args.out_dir) / filename_for(key);
+            const bool write_energy =
+                args.force || !file_exists(out_path.string());
+            const bool export_nk = !args.nk_out_dir.empty();
 
-        if (!write_energy && !export_nk) {
-            std::cout << "[skip] " << out_path
-                      << " already exists; pass --force to recompute.\n";
-            ++n_skipped;
-            continue;
-        }
-
-        std::ofstream out;
-        if (write_energy) {
-            out.open(out_path);
-            if (!out) {
-                std::cerr << "Cannot open " << out_path << "\n";
+            if (!write_energy && !export_nk) {
+                std::cout << "[skip] " << out_path.string()
+                          << " already exists; pass --force to recompute.\n";
+                ++n_skipped;
                 continue;
             }
-            out << "# rs\tfunctional\tE_per_N(Ha)\tEc_per_N(Ha)\tEc_QMC(Ha)"
-                   "\tT/N\tExc/N\tmu\trho_err\tconverged\titers\n";
-            out << std::scientific << std::setprecision(10);
-        } else {
-            std::cout << "[nk-only] " << out_path
-                      << " exists; writing n(k) to " << args.nk_out_dir << "\n";
-        }
 
-        if (export_nk) {
-            std::filesystem::create_directories(args.nk_out_dir);
-        }
+            std::unique_ptr<AtomicOutput> energy_output;
+            if (write_energy) {
+                energy_output = std::make_unique<AtomicOutput>(out_path);
+                auto& out = energy_output->stream();
+                out << "# rs\tfunctional\tE_per_N(Ha)\tEc_per_N(Ha)\tEc_QMC(Ha)"
+                       "\tT/N\tExc/N\tmu\trho_err\tconverged\titers\n";
+                out << std::scientific << std::setprecision(10);
+            } else {
+                std::cout << "[nk-only] " << out_path.string()
+                          << " exists; writing n(k) to " << args.nk_out_dir << "\n";
+            }
 
-        // Rebuild the Grid for each rs: uniform k in [0, k_max], k_max = factor * k_F.
-        for (double rs : args.rs_list) {
-            const double kf    = HEG::kF(rs);
-            const double k_max = args.k_max_factor * kf;
-            Grid g = Grid::uniform_trapezoid(
-                k_max, static_cast<std::size_t>(args.N_grid));
-            ExchangeKernel W  = ExchangeKernel::build(g);
+            // Rebuild the Grid for each rs: uniform k in [0, k_max],
+            // k_max = factor * k_F.
+            for (double rs : args.rs_list) {
+                const double kf = HEG::kF(rs);
+                const double k_max = args.k_max_factor * kf;
+                Grid g = Grid::uniform_trapezoid(
+                    k_max, static_cast<std::size_t>(args.N_grid));
+                ExchangeKernel W = ExchangeKernel::build(g);
 
-            const double E_HF_per_N = HEG::HF_per_electron(rs);
-            const double Ec_QMC     = PW92::ec_per_electron(rs);
+                const double E_HF_per_N = HEG::HF_per_electron(rs);
+                const double Ec_QMC = PW92::ec_per_electron(rs);
 
-            SolveOptions opt;
-            opt.verbose  = args.verbose;
-            opt.tol_n    = 1.0e-8;
-            opt.max_iter = 1200;
-            opt.mix      = 0.40;
-            opt.init_uniform_n = args.init_uniform_n;
+                SolveOptions opt;
+                opt.verbose = args.verbose;
+                opt.tol_n = 1.0e-8;
+                opt.max_iter = 1200;
+                opt.mix = 0.40;
+                opt.init_uniform_n = args.init_uniform_n;
 
-            SolveResult r = solve_rdmft(rs, *F, g, W, opt);
+                SolveResult r = solve_rdmft(rs, *F, g, W, opt);
+                bool valid_result =
+                    r.n.size() == g.n() && std::isfinite(r.mu)
+                    && std::isfinite(r.rho) && r.rho > 0.0
+                    && std::isfinite(r.T_per_V)
+                    && std::isfinite(r.Exc_per_V)
+                    && std::isfinite(r.E_per_N);
+                for (double occupation : r.n) {
+                    valid_result = valid_result && std::isfinite(occupation)
+                        && occupation >= 0.0 && occupation <= 1.0;
+                }
+                if (!valid_result) {
+                    throw std::runtime_error(
+                        "solver produced no finite result for " + F->name()
+                        + " at r_s=" + std::to_string(rs)
+                        + (r.failure_reason.empty()
+                               ? std::string()
+                               : ": " + r.failure_reason));
+                }
 
-            if (export_nk) {
-                char nk_name[512];
-                std::snprintf(nk_name, sizeof(nk_name), "%s/%s_rs%.4f.tsv",
-                              args.nk_out_dir.c_str(),
-                              nk_stem_for(key).c_str(),
-                              rs);
-                std::ofstream nk(nk_name);
-                if (nk) {
+                if (export_nk) {
+                    std::ostringstream nk_filename;
+                    nk_filename << nk_stem_for(key) << "_rs"
+                                << std::fixed << std::setprecision(4) << rs
+                                << ".tsv";
+                    const std::filesystem::path nk_path =
+                        std::filesystem::path(args.nk_out_dir) / nk_filename.str();
+                    AtomicOutput nk_output(nk_path);
+                    auto& nk = nk_output.stream();
                     // Always export n(k), even when the SCF did not fully
                     // converge.  Downstream tooling (optimize_nn_gz.py) needs
                     // a finite RMSE signal on bad weight vectors, so the
@@ -284,6 +419,9 @@ int main(int argc, char** argv) {
                        << "\n";
                     nk << "# functional: " << F->name() << "\n";
                     nk << "# converged: " << (r.converged ? 1 : 0) << "\n";
+                    if (!r.failure_reason.empty()) {
+                        nk << "# failure_reason: " << r.failure_reason << "\n";
+                    }
                     nk << "# rho_target=" << rho_target
                        << " rho_actual=" << r.rho
                        << " rho_err=" << rho_err << "\n";
@@ -292,48 +430,52 @@ int main(int argc, char** argv) {
                     for (std::size_t i = 0; i < g.n(); ++i) {
                         nk << g.k[i] << '\t' << r.n[i] << "\n";
                     }
+                    nk_output.commit();
                     if (!r.converged) {
                         std::cerr << "Warning: SCF did not converge for "
                                   << F->name() << " r_s=" << rs
                                   << " (rho_err=" << rho_err
+                                  << ", reason=" << r.failure_reason
                                   << "); n(k) exported anyway.\n";
                     }
-                } else {
-                    std::cerr << "Warning: cannot open " << nk_name
-                              << " for nk export\n";
                 }
-            }
 
-            const double Ec      = r.E_per_N - E_HF_per_N;
-            const double rho_err = std::abs(r.rho - HEG::density(rs));
+                const double Ec = r.E_per_N - E_HF_per_N;
+                const double rho_err = std::abs(r.rho - HEG::density(rs));
+
+                if (write_energy) {
+                    auto& out = energy_output->stream();
+                    out << rs << '\t' << F->name() << '\t' << r.E_per_N << '\t'
+                        << Ec << '\t' << Ec_QMC << '\t'
+                        << r.T_per_V / r.rho << '\t'
+                        << r.Exc_per_V / r.rho << '\t'
+                        << r.mu << '\t'
+                        << rho_err << '\t'
+                        << (r.converged ? 1 : 0) << '\t'
+                        << r.iters << "\n";
+                }
+
+                std::cout << std::setw(7) << rs << "  "
+                          << std::setw(16) << std::left << F->name() << std::right
+                          << "  " << std::setw(13) << Ec
+                          << "   " << std::setw(13) << Ec_QMC
+                          << (r.converged ? "" : "  [not converged]")
+                          << "\n";
+            }
 
             if (write_energy) {
-                out << rs << '\t' << F->name() << '\t' << r.E_per_N << '\t'
-                    << Ec << '\t' << Ec_QMC << '\t'
-                    << r.T_per_V / r.rho << '\t'
-                    << r.Exc_per_V / r.rho << '\t'
-                    << r.mu << '\t'
-                    << rho_err << '\t'
-                    << (r.converged ? 1 : 0) << '\t'
-                    << r.iters << "\n";
-                out.flush();
+                energy_output->commit();
+                std::cout << "Wrote " << out_path.string() << "\n";
+                ++n_written;
+            } else if (export_nk) {
+                std::cout << "Wrote n(k) files for " << F->name()
+                          << " under " << args.nk_out_dir << "\n";
+                ++n_written;
             }
-
-            std::cout << std::setw(7) << rs << "  "
-                      << std::setw(16) << std::left << F->name() << std::right
-                      << "  " << std::setw(13) << Ec
-                      << "   " << std::setw(13) << Ec_QMC
-                      << (r.converged ? "" : "  [not converged]")
-                      << "\n";
-        }
-
-        if (write_energy) {
-            std::cout << "Wrote " << out_path << "\n";
-            ++n_written;
-        } else if (export_nk) {
-            std::cout << "Wrote n(k) files for " << F->name()
-                      << " under " << args.nk_out_dir << "\n";
-            ++n_written;
+        } catch (const std::exception& error) {
+            std::cerr << "rdmft_heg: failed to process " << key
+                      << ": " << error.what() << "\n";
+            had_errors = true;
         }
     }
 
@@ -342,5 +484,14 @@ int main(int argc, char** argv) {
     if (n_skipped > 0) {
         std::cout << "Use --force to overwrite existing per-functional TSVs.\n";
     }
-    return 0;
+    return had_errors ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+    try {
+        return run(parse_args(argc, argv));
+    } catch (const std::exception& error) {
+        std::cerr << "rdmft_heg: " << error.what() << "\n";
+        return 2;
+    }
 }
