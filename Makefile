@@ -216,6 +216,7 @@ test: $(TEST_BIN) $(TEST_GZ_BIN) $(TEST_NN_BIN) $(TEST_SOLVER_BIN) \
 	./$(TEST_NN_BIN)
 	./$(TEST_SOLVER_BIN)
 	./$(TEST_BOUNDARIES_BIN)
+	python3 tests/test_cli.py ./$(TARGET)
 
 clean:
 	rm -rf $(BIN_DIR)
