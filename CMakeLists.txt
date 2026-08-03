@@ -44,6 +44,15 @@ add_executable(test_nn_functional
     src/NNFunctional.cpp
 )
 add_test(NAME nn_functional COMMAND test_nn_functional)
+set_tests_properties(nn_functional PROPERTIES
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+)
+
+add_executable(test_solver_robustness tests/test_solver_robustness.cpp)
+add_test(NAME solver_robustness COMMAND test_solver_robustness)
+set_tests_properties(solver_robustness PROPERTIES
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+)
 
 # Helper binary used by scripts/plot_gz.py to render the
 # Gori-Giorgi/Ziesche n(k, rs) parametrization (paper Fig. 6).

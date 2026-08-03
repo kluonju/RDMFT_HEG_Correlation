@@ -548,6 +548,41 @@ solve_rdmft(double rs,
     auto density_of = [&](const std::vector<double>& nv) {
         return EnergyEvaluator::density(nv, g);
     };
+    const std::vector<double> full_occupations(g.n(), 1.0);
+    const double maximum_grid_density = density_of(full_occupations);
+    if (!std::isfinite(maximum_grid_density)
+        || maximum_grid_density + rho_tolerance < rho_target) {
+        SolveResult failed;
+        failed.failure_reason =
+            "chemical-potential search cannot bracket the target density on this grid";
+        return failed;
+    }
+    auto project_to_target_density = [&](std::vector<double>& nv) {
+        if (!valid_occupations(nv)) return false;
+        double lo = -1.0;
+        double hi = 1.0;
+        auto shifted_density = [&](double shift) {
+            double sum = 0.0;
+            constexpr double pi = M_PI;
+            for (std::size_t i = 0; i < g.n(); ++i) {
+                const double value = std::clamp(nv[i] + shift, 0.0, 1.0);
+                sum += g.w[i] * g.k[i] * g.k[i] * value;
+            }
+            return sum / (pi * pi);
+        };
+        for (int b = 0; b < opt.bisect_iter; ++b) {
+            const double mid = 0.5 * (lo + hi);
+            if (shifted_density(mid) > rho_target) hi = mid;
+            else                                    lo = mid;
+        }
+        const double shift = 0.5 * (lo + hi);
+        for (double& value : nv) {
+            value = std::clamp(value + shift, 0.0, 1.0);
+        }
+        const double rho = density_of(nv);
+        return valid_occupations(nv) && std::isfinite(rho)
+            && std::abs(rho - rho_target) <= rho_tolerance;
+    };
 
     // Multi-start strategy for additive kernels: probe several smearing
     // widths and keep the lowest-energy result.  CGA / Beta have a stable
@@ -580,6 +615,10 @@ solve_rdmft(double rs,
         uniform_init ? initial_constant(g, *opt.init_uniform_n)
                      : (start.first ? initial_step(rs, g)
                                     : initial_smeared(rs, g, start.second));
+    if (!project_to_target_density(n)) {
+        last_failure = "failed to project initial occupations to the target density";
+        continue;
+    }
     double mu = 0.5 * HEG::kF(rs) * HEG::kF(rs);
     int it = 0;
     bool converged = false;
