@@ -74,6 +74,38 @@ int main() {
     }
 
     {
+        Grid g = Grid::uniform_trapezoid(2.0 * kf, 11);
+        ExchangeKernel W = ExchangeKernel::build(g);
+        GenericSmoothFunctional functional;
+        std::vector<double> occupations(g.n(), 0.0);
+        for (std::size_t i = 0; i < occupations.size(); ++i) {
+            occupations[i] = 0.2 + 0.05 * static_cast<double>(i);
+        }
+        auto check_gradient = [&](const Functional& candidate,
+                                  const std::string& label) {
+            const auto derivative =
+                EnergyEvaluator::deps_xc(occupations, g, W, candidate);
+            const std::size_t index = 5;
+            const double step = 1.0e-6;
+            auto upper = occupations;
+            auto lower = occupations;
+            upper[index] += step;
+            lower[index] -= step;
+            const double finite_difference =
+                (EnergyEvaluator::xc_per_volume(upper, g, W, candidate)
+                 - EnergyEvaluator::xc_per_volume(lower, g, W, candidate))
+                / (2.0 * step);
+            const double scale = std::max(1.0, std::abs(finite_difference));
+            check(std::abs(derivative[index] - finite_difference)
+                      <= 1.0e-8 * scale,
+                  label + " gradient should match the discrete energy");
+        };
+        check_gradient(functional, "factorized");
+        GEOFunctional geo;
+        check_gradient(geo, "non-factorized");
+    }
+
+    {
         Grid g = Grid::uniform_trapezoid(3.0 * kf, 31);
         ExchangeKernel W = ExchangeKernel::build(g);
         NonFiniteFunctional functional;

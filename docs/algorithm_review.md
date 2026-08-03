@@ -230,29 +230,25 @@ $$
 \mathrm{pref}_i=\frac{w_ik_i^2}{\pi^2},
 $$
 
-with, for a symmetric kernel,
+with, for a symmetric kernel and the discrete product-integration matrix,
 
 $$
 \frac{\partial(E_{xc}/V)}{\partial n_i}
-= -\frac{k_i}{\pi^3}\sum_j w_j\,k_j\,W_{ji}\,
-   \frac{\partial K}{\partial n_i}(n_i,n_j).
+= -\frac{k_i}{2\pi^3}\left[
+ w_i\sum_j W_{ij}k_j\,K_1(n_i,n_j)
+ \sum_j w_jk_jW_{ji}\,K_1(n_i,n_j)\right].
 $$
 
 The KKT/complementarity conditions are: $\varepsilon_i=\mu$ where
 $0<n_i<1$; $\varepsilon_i>\mu\Rightarrow n_i=0$; $\varepsilon_i<\mu\Rightarrow n_i=1$.
 
-**Check on the discretisation.** The closed-form branches use
-$U_i=\sum_j W_{ij}k_j f(n_j)$ (row of $W$, no explicit $w_j$), whereas
-`deps_xc` uses $\sum_j w_j k_j W_{ji}(\cdots)$ (column of $W$, explicit $w_j$).
-Since the hat integral makes $W_{ij}\approx w_j\,P(k_i,k_j)$ and $P$ is
-symmetric, one has $W_{ji}\approx w_i P(k_i,k_j)$, so
-$w_j k_j W_{ji}/w_i \approx W_{ij}k_j$: the two forms are the **same**
-discretisation of the continuum gradient
-$\delta E_{xc}/\delta n(k) = -\tfrac{k}{\pi^3}\int k' K_1\,\ln|\cdots|\,dk'$, up
-to the intrinsic quadrature error (the exact discrete-energy gradient is their
-symmetric average). Both converge to the correct continuum EL, and the
-line-search branch tests the *actual* energy so it can never take an
-energy-increasing step. ✔
+**Check on the discretisation.** The two bracketed terms are the contributions
+from $n_i$ appearing as the first and second argument of the discrete symmetric
+double sum. `deps_xc` evaluates both, using rows of $W$ and $W^T$, so it is the
+exact derivative of the energy that the Armijo line search evaluates. The
+closed-form branches instead use the equivalent continuum EL row sum
+$U_i=\sum_jW_{ij}k_jf(n_j)$; both forms converge to the same continuum
+functional as the grid is refined. ✔
 
 ---
 
@@ -325,7 +321,7 @@ $\beta_3=1.6382$, $\beta_4=0.49294$ — the standard PW92 paramagnetic set. ✔
 |---|---|
 | Density, kinetic, exchange prefactors | ✔ correct (derived + numerically checked) |
 | Log-singular product integration ($W$) | ✔ correct (exact for piecewise-linear integrands) |
-| Euler–Lagrange / `pseudo_energy` | ✔ correct; two gradient discretisations consistent |
+| Euler–Lagrange / `pseudo_energy` | ✔ correct; exact discrete energy gradient |
 | $\mu$ bisection / density constraint | ✔ correct (monotone, adaptive bracket) |
 | Power / additive / HybOpt occupation updates | ✔ correct closed-form / monotone inversions |
 | Projected-gradient + Armijo line search | ✔ energy-monotone, robust |
@@ -344,10 +340,6 @@ distribution the solver produces.
 
 ### Minor (non-bug) observations
 
-* The two gradient discretisations (`compute_U` using `w_row` without $w_j$ vs
-  `deps_xc` using `wt_row` with $w_j$) agree only up to quadrature error, not
-  bit-for-bit; this is expected and harmless because the closed-form branches
-  don't use `deps_xc` and the PGD branch line-searches the true energy.
 * `docs/program_summary_zh.md` previously documented the GEO kernel with the
   buggy $1:2:1$ weights (declaring the code authoritative); it has been updated
   to the corrected $1:1:2$ form.
