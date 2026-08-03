@@ -577,12 +577,17 @@ solve_rdmft(double rs,
             else                                    lo = mid;
         }
         const double shift = 0.5 * (lo + hi);
-        for (double& value : nv) {
+        std::vector<double> projected = nv;
+        for (double& value : projected) {
             value = std::clamp(value + shift, 0.0, 1.0);
         }
-        const double rho = density_of(nv);
-        return valid_occupations(nv) && std::isfinite(rho)
-            && std::abs(rho - rho_target) <= rho_tolerance;
+        const double rho = density_of(projected);
+        if (!valid_occupations(projected) || !std::isfinite(rho)
+            || std::abs(rho - rho_target) > rho_tolerance) {
+            return false;
+        }
+        nv = std::move(projected);
+        return true;
     };
 
     // Multi-start strategy for additive kernels: probe several smearing

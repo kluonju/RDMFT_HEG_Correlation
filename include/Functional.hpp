@@ -788,7 +788,7 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     // HybOpt@lambda;alpha — HF / Power(alpha) mixture (legacy OptGM@ accepted).
     if (key.rfind("HybOpt@", 0) == 0) {
         const auto values = functional_detail::parse_parameter_pair(
-            key.substr(8), "HybOpt");
+            key.substr(7), "HybOpt");
         return std::make_unique<HybOptFunctional>(values.first, values.second);
     }
     if (key.rfind("OptGM@", 0) == 0) {

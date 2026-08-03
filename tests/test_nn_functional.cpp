@@ -53,6 +53,15 @@ static void check_model_rejected(const std::string& json, const char* msg) {
 }
 
 int main() {
+    {
+        std::unique_ptr<Functional> functional =
+            make_functional("HybOpt@1.0;0.5");
+        const auto* hybrid =
+            dynamic_cast<const HybOptFunctional*>(functional.get());
+        check(hybrid != nullptr && hybrid->lambda_mix() == 1.0,
+              "HybOpt factory preserves lambda=1");
+    }
+
     const std::string path = "tests/fixtures/nn_power055.json";
     std::unique_ptr<Functional> F = load_nn_functional(path);
     if (!F) {
