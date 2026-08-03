@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -46,6 +47,12 @@ struct Grid {
             w[i] = 0.5 * (x[i] - x[i - 1]) + 0.5 * (x[i + 1] - x[i]);
         }
         w[N - 1] = 0.5 * (x[N - 1] - x[N - 2]);
+        for (double weight : w) {
+            if (!std::isfinite(weight) || weight < 0.0) {
+                throw std::overflow_error(
+                    "composite trapezoid weights are not finite");
+            }
+        }
         return w;
     }
 
@@ -56,6 +63,9 @@ struct Grid {
         if (N < 3 || (N % 2) == 0) {
             throw std::invalid_argument(
                 "uniform_simpson requires an odd number of at least three nodes");
+        }
+        if (N > std::vector<double>().max_size()) {
+            throw std::length_error("uniform_simpson grid is too large");
         }
         Grid g;
         g.k.resize(N);
@@ -82,6 +92,9 @@ struct Grid {
             throw std::invalid_argument(
                 "uniform_trapezoid requires at least two nodes");
         }
+        if (N > std::vector<double>().max_size()) {
+            throw std::length_error("uniform_trapezoid grid is too large");
+        }
         Grid g;
         g.k.resize(N);
         g.w.resize(N);
@@ -104,12 +117,26 @@ struct Grid {
             throw std::invalid_argument(
                 "trapezoid_with_node_at requires 0 < k_F < k_max and at least two nodes");
         }
+        if (N_target > std::vector<double>().max_size()) {
+            throw std::length_error("Fermi-aligned grid is too large");
+        }
         const double h_guess = k_max_min / static_cast<double>(N_target - 1);
+        const double m_estimate = std::round(k_F / h_guess);
+        if (!std::isfinite(m_estimate)
+            || m_estimate >= static_cast<double>(
+                std::numeric_limits<std::size_t>::max())) {
+            throw std::length_error("Fermi-node index is out of range");
+        }
         std::size_t m = std::max<std::size_t>(
-            8u, static_cast<std::size_t>(std::round(k_F / h_guess)));
+            8u, static_cast<std::size_t>(m_estimate));
         const double h = k_F / static_cast<double>(m);
-        std::size_t N = static_cast<std::size_t>(
-            std::ceil(k_max_min / h)) + 1;
+        const double n_estimate = std::ceil(k_max_min / h);
+        if (!std::isfinite(n_estimate)
+            || n_estimate >= static_cast<double>(
+                std::numeric_limits<std::size_t>::max() - 1u)) {
+            throw std::length_error("Fermi-aligned grid size is out of range");
+        }
+        std::size_t N = static_cast<std::size_t>(n_estimate) + 1u;
         if (N < N_target) N = N_target;
         return uniform_trapezoid(h * static_cast<double>(N - 1), N);
     }
@@ -124,6 +151,10 @@ struct Grid {
             || k_F <= 0.0 || k_max_min <= k_F || N_target < 21u) {
             throw std::invalid_argument(
                 "graded_fermi_trapezoid requires 0 < k_F < k_max and at least 21 nodes");
+        }
+        if (N_target > std::vector<double>().max_size()
+            || N_target > std::numeric_limits<std::size_t>::max() / 13u) {
+            throw std::length_error("graded grid is too large");
         }
 
         // NM intervals in [k_lo, k_hi]; k_F = k_lo + j_F * h_m (integer j_F).
@@ -195,6 +226,9 @@ struct Grid {
             || k_F <= 0.0 || k_max_min <= k_F || N_target < 3u) {
             throw std::invalid_argument(
                 "log_trapezoid requires 0 < k_F < k_max and at least three nodes");
+        }
+        if (N_target > std::vector<double>().max_size()) {
+            throw std::length_error("logarithmic grid is too large");
         }
         std::vector<double> x;
         x.reserve(N_target);

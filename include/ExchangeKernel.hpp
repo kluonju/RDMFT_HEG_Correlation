@@ -148,6 +148,12 @@ struct ExchangeKernel {
                 K.W[i * N + s + 1]   += w_right;
             }
         }
+        for (double weight : K.W) {
+            if (!std::isfinite(weight)) {
+                throw std::overflow_error(
+                    "exchange product-integration matrix is non-finite");
+            }
+        }
         K.Wt.resize(N * N);
         for (std::size_t i = 0; i < N; ++i) {
             for (std::size_t j = 0; j < N; ++j) {

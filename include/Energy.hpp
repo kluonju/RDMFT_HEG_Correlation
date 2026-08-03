@@ -32,7 +32,8 @@ namespace rdmft {
 struct EnergyEvaluator {
     static void validate_grid_vector(const std::vector<double>& n,
                                      const Grid& g) {
-        if (g.k.size() != g.w.size() || n.size() != g.k.size()) {
+        if (g.k.empty() || g.k.size() != g.w.size()
+            || n.size() != g.k.size()) {
             throw std::invalid_argument(
                 "occupation, grid-node, and grid-weight sizes must match");
         }

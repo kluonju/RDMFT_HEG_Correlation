@@ -277,7 +277,7 @@ times if the bracket is too tight). ✔ (monotonicity guarantees a unique root).
    solve $U^{HF}_i+g'(n_i)U^{g}_i=R/a$ with a dedicated 1-D inverter
    (CGA: $n=1-s/\sqrt{1+s^2}$; Beta: bracketed root of
    $u(1-u^2)^{\beta-1}=B$, $u=1-2n$). ✔
-3. **GEO / OptGeo channel form**: three channel sums $U_{1,2,3}$, LHS strictly
+3. **GEO channel form**: three channel sums $U_{1,2,3}$, LHS strictly
    decreasing in $n_i$ (for $U_\alpha\ge0$), solved by bisection on $(0,1)$.
 4. **HybOpt**: two-channel HF+Power, monotone LHS, bisection.
 5. **Everything else** (arbitrary separable kernels including NN, BBC1, BBC3,

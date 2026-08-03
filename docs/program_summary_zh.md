@@ -147,7 +147,7 @@ $$
 | **Beta($\beta$)** | $K=n_in_j+\bigl[n_i(1-n_i)n_j(1-n_j)\bigr]^\beta$ | $\beta\to\infty$ 趋向 HF 空穴关闭；$\beta=\frac12$ 即 CHF |
 | **GEO** | 见下式 **(实现)** | 三通道非乘积核 |
 | **OptGeo** | $K=w_1 n_in_j+w_2(n_in_j)^{1/2}+w_3(n_in_j)^{3/4}$ | $w_k$ 由球面角 $(a,b,c)$ 平方归一化：$w_1=a^2/\|\cdot\|^2$ 等 |
-| **HybOpt** | $(1-\lambda)n_in_j+\lambda n_i^\alpha n_j^\alpha$ | $\lambda\in[0,1]$；$\alpha\in(0,1)$（边界数值钳制） |
+| **HybOpt** | $(1-\lambda)n_in_j+\lambda n_i^\alpha n_j^\alpha$ | $\lambda\in[0,1]$；$\alpha\in(0,1)$（越界或非有限参数会被拒绝） |
 | **BBC1** | 弱–弱占据对 $\sqrt{n_in_j}$ 带**光滑**符号翻转 | 演示非乘积、梯度难；`smooth` 默认 $0.05$ |
 | **BBC3** | 弱–弱 / 强–强 / 其余三种规则 + 光滑化 | HEG 上等价 BBC2 型配对规则 |
 
