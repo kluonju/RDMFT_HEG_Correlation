@@ -15,9 +15,11 @@ namespace rdmft {
 //     \int_0^{k_max} F(k) dk  ~=  \sum_i w_i F(k_i).
 //
 // The driver uses ``uniform_trapezoid`` on [0, k_max] with composite trapezoid
-// weights.  ``graded_fermi_trapezoid`` packs nodes near k_F (optional / legacy).
-// ``log_trapezoid`` (uniform in ln k from k_eps to k_max, with k[0]=0) is an
-// optional mesh for experiments.  All routines are header-only.
+// weights by default.  Other meshes:
+//   - ``graded_fermi_trapezoid``: dense band around k_F (k_F is a node)
+//   - ``log_trapezoid``: uniform in ln k (dense near k=0)
+//   - ``log_fermi_trapezoid``: log left wing + dense Fermi band + coarse tail
+// All routines are header-only.
 struct Grid {
     std::vector<double> k;   // grid points (strictly increasing)
     std::vector<double> w;   // integration weights
@@ -254,6 +256,111 @@ struct Grid {
                     "log k mesh must be finite and strictly increasing");
             }
         }
+        Grid g;
+        g.k     = std::move(x);
+        g.k_max = g.k.back();
+        g.w     = composite_trapezoid_weights(g.k);
+        return g;
+    }
+
+    // Hybrid mesh for n(k): logarithmic wing near k=0, dense uniform band
+    // around k_F (with k_F exactly a node), and a coarser uniform high-k tail.
+    // Combines the strengths of ``log_trapezoid`` and ``graded_fermi_trapezoid``.
+    static Grid log_fermi_trapezoid(double k_F, double k_max_min,
+                                    std::size_t N_target) {
+        if (!std::isfinite(k_F) || !std::isfinite(k_max_min)
+            || k_F <= 0.0 || k_max_min <= k_F || N_target < 31u) {
+            throw std::invalid_argument(
+                "log_fermi_trapezoid requires 0 < k_F < k_max and at least 31 nodes");
+        }
+        if (N_target > std::vector<double>().max_size()
+            || N_target > std::numeric_limits<std::size_t>::max() / 13u) {
+            throw std::length_error("log-fermi grid is too large");
+        }
+
+        // Dense mid band [k_lo, k_hi] of width ~ k_F, with k_F a node.
+        std::size_t NM = std::max<std::size_t>(
+            12u, std::min((N_target * 12u) / 25u, N_target - 16u));
+        const double band = 1.0 * k_F;
+        const double h_m  = band / static_cast<double>(NM);
+        const std::size_t j_F = std::max<std::size_t>(
+            1u, std::min((4u * NM) / 5u, NM - 1u));
+        const double k_lo = k_F - static_cast<double>(j_F) * h_m;
+        const double k_hi = k_lo + static_cast<double>(NM) * h_m;
+        if (!(k_lo > 0.0) || !(k_hi < k_max_min)) {
+            throw std::logic_error("log-fermi band must lie inside (0, k_max)");
+        }
+
+        const std::size_t N_rem = N_target - 1u - NM;
+        if (N_rem < 8u) {
+            throw std::logic_error("log-fermi grid has too few wing intervals");
+        }
+
+        // Prefer the left (log) wing so small-k structure is resolved, but keep
+        // enough points on the high-k tail for the n(k>k_F) decay.
+        constexpr double left_weight = 2.5;
+        const double len_left  = k_lo;
+        const double len_right = k_max_min - k_hi;
+        const double wleft = left_weight * len_left;
+        std::size_t NL = static_cast<std::size_t>(std::llround(
+            static_cast<double>(N_rem) * (wleft / (wleft + len_right))));
+        NL = std::max<std::size_t>(4u, std::min(N_rem - 4u, NL));
+        const std::size_t NR = N_rem - NL;
+
+        const double k_eps = std::max(k_F * 1.0e-6, k_lo * 1.0e-8);
+        if (!(k_eps > 0.0) || !(k_eps < k_lo)) {
+            throw std::invalid_argument("invalid log-fermi left-wing floor");
+        }
+
+        std::vector<double> x;
+        x.reserve(N_target);
+        x.push_back(0.0);
+        // NL intervals on the left wing: k_eps ... k_lo (log), counting k_lo.
+        // Nodes: 0, then NL points from k_eps to k_lo inclusive => NL+1 new?
+        // graded uses i=0..NL giving NL+1 points from 0 to k_lo.
+        // Here: point 0 = 0; points 1..NL-1 log in (k_eps, k_lo); point NL = k_lo.
+        if (NL == 1u) {
+            x.push_back(k_lo);
+        } else {
+            const double ln0 = std::log(k_eps);
+            const double ln1 = std::log(k_lo);
+            const double inv = 1.0 / static_cast<double>(NL - 1u);
+            for (std::size_t i = 0; i < NL; ++i) {
+                const double t = static_cast<double>(i) * inv;
+                x.push_back(std::exp(ln0 + t * (ln1 - ln0)));
+            }
+        }
+        // Mid band (skip k_lo already present).
+        for (std::size_t t = 1; t <= NM; ++t) {
+            x.push_back(k_lo + static_cast<double>(t) * h_m);
+        }
+        // Right wing.
+        for (std::size_t t = 1; t <= NR; ++t) {
+            x.push_back(k_hi + static_cast<double>(t) * (k_max_min - k_hi) /
+                                    static_cast<double>(NR));
+        }
+
+        if (x.size() != N_target) {
+            throw std::logic_error("log-fermi grid node count mismatch");
+        }
+        // Ensure k_F is (approximately) a node of the mid band.
+        bool has_kf = false;
+        for (double ki : x) {
+            if (std::abs(ki - k_F) <= 1.0e-12 * std::max(1.0, k_F)) {
+                has_kf = true;
+                break;
+            }
+        }
+        if (!has_kf) {
+            throw std::logic_error("log-fermi grid missed k_F node");
+        }
+        for (std::size_t i = 1; i < x.size(); ++i) {
+            if (!std::isfinite(x[i]) || x[i] <= x[i - 1]) {
+                throw std::logic_error(
+                    "log-fermi k mesh must be finite and strictly increasing");
+            }
+        }
+
         Grid g;
         g.k     = std::move(x);
         g.k_max = g.k.back();

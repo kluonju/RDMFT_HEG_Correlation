@@ -1,7 +1,7 @@
 """Shared curve list and styles for correlation-energy and n(k) figures.
 
 ``WANTED_SERIES`` / ``WANTED_SET`` define which functionals appear in both plots
-(Müller, CGA, CHF, Power curves, hybopt = HybOpt HF/Power mix).
+(Müller, CGA, CHF, BOW, Power curves, hybopt = HybOpt HF/Power mix).
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ WANTED_SERIES = (
     "Mueller",
     "CGA",
     "CHF",
+    "BOW",
     "Power(0.55)",
     "Power(0.58)",
     "hybopt",
@@ -28,6 +29,7 @@ SUBSET_STYLE: dict[str, tuple[str | None, str, str | None]] = {
     "Mueller": ("#21c7d6", "--", "o"),
     "CGA": ("#ff7f0e", "--", "D"),
     "CHF": ("#9467bd", "--", "^"),
+    "BOW": ("#8c564b", "--", "v"),
     "optGeo": ("#006400", "--", "h"),
     # Solid blue + diamonds + drawn last (stands out vs dashed RDMFT curves).
     "hybopt": ("#1f77b4", "-", "D"),
@@ -44,6 +46,10 @@ def pretty_functional_name(fn: str) -> str:
             return f"Power({float(alpha):.2f})"
         except ValueError:
             return fn
+    if fn.startswith("BOW(alpha="):
+        return "BOW"
+    if fn.startswith("SymBow(alpha="):
+        return "SymBow"
     if fn.startswith("optGeo("):
         return "optGeo"
     if fn.startswith("hybopt("):
@@ -56,6 +62,17 @@ def pretty_functional_name(fn: str) -> str:
             return "hybopt"
         return "optGeo"
     return fn
+
+
+# Display names for figure legends (internal keys stay ASCII for TSV matching).
+_LEGEND_DISPLAY = {
+    "Mueller": "Müller",
+}
+
+
+def legend_label(key: str) -> str:
+    """Human-readable legend text for an internal series key."""
+    return _LEGEND_DISPLAY.get(key, key)
 
 
 def legend_key_for_subset(fn: str) -> str | None:

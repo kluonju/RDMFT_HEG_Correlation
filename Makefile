@@ -11,7 +11,7 @@
 #   make plot       -- all figures: correlation_energy, nk, nk_optgeo, nk_hybopt
 #   make plot-gz    -- figures/nk_gz.png (Gori-Giorgi/Ziesche n(k,rs), paper Fig. 6)
 #   make nk-data     -- export n(k) TSVs under data/nk (same funcs as correlation figure)
-#   make plot-nk     -- figures/nk.png (only r_s that exist under data/nk; --rs auto)
+#   make plot-nk     -- figures/nk.png (2x2: r_s = 0.5,1,5,10 with GZ overlay)
 #   make plot-nk-optgeo -- figures/nk_optgeo.png (optGeo n(k) overlay only)
 #   make plot-nk-hybopt  -- figures/nk_hybopt.png (hybopt n(k) overlay; skips if no nk TSVs)
 #   make test       -- run the HF exchange unit test
@@ -46,10 +46,16 @@ RS_LIST  := 0.2,0.3,0.5,1,2,3,4,5,6,8,10
 # Default k-grid size and uniform initial occupation (passed to rdmft_heg).
 N_GRID       ?= 401
 INIT_UNIFORM ?= 0.5
+# n(k) export: integrate / solve out to NK_KMAX * k_F (plot default xmax = 3).
+NK_KMAX      ?= 20
+# n(k) uses a denser log mesh by default (odd N); energy sweeps keep N_GRID.
+NK_N_GRID    ?= 1201
+# n(k) k-mesh: log (default) | logfermi | graded | uniform.
+NK_GRID      ?= log
 # Default sweep: only these functionals (edit FUNCS). OptGeo uses ';' — quote for the shell.
 # OptGeo: HF + w*(2*sigmoid(k*x)-1), x=(n-1/2)^2 pair variable (default w=1, k=5).
 # HybOpt: HF/Power mix fit vs PW92 on r_s in [0.2, 6] at N=401 (see data/optimize_optGM_rs6.log).
-FUNCS := Mueller,CGA,CHF,OptGeo@1;5,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076
+FUNCS := Mueller,CGA,CHF,BOW,OptGeo@1;5,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076
 
 NK_DIR := data/nk
 NK_FUNCS := $(FUNCS)
@@ -140,12 +146,12 @@ hybopt: $(TARGET)
 		--out-dir $(DATA_DIR) \
 		--force
 
-plot:
+plot: $(DUMP_GZ_BIN)
 	mkdir -p figures
 	python3 scripts/plot_results.py --in $(DATA_DIR) \
 		--out figures/correlation_energy.png
-	python3 scripts/plot_nk.py --dir $(NK_DIR) --rs auto \
-		--out figures/nk.png
+	python3 scripts/plot_nk.py --dir $(NK_DIR) --rs 0.5,1,5,10 --layout 2x2 \
+		--dump-gz $(DUMP_GZ_BIN) --out figures/nk.png
 	python3 scripts/plot_nk_optgeo.py --dir $(NK_DIR) --rs auto \
 		--out figures/nk_optgeo.png
 	python3 scripts/plot_nk_hybopt.py --dir $(NK_DIR) --rs auto \
@@ -153,16 +159,16 @@ plot:
 
 nk-data: $(TARGET)
 	mkdir -p $(NK_DIR)
-	./$(TARGET) --N $(N_GRID) --kmax 3 \
+	./$(TARGET) --N $(NK_N_GRID) --kmax $(NK_KMAX) --grid $(NK_GRID) \
 		--rs $(RS_LIST) \
 		--funcs "$(NK_FUNCS)" \
 		--init-uniform $(INIT_UNIFORM) \
 		--out-dir $(DATA_DIR) --nk-out $(NK_DIR)
 
-plot-nk:
+plot-nk: $(DUMP_GZ_BIN)
 	mkdir -p figures
-	python3 scripts/plot_nk.py --dir $(NK_DIR) --rs auto \
-		--out figures/nk.png
+	python3 scripts/plot_nk.py --dir $(NK_DIR) --rs 0.5,1,5,10 --layout 2x2 \
+		--dump-gz $(DUMP_GZ_BIN) --out figures/nk.png
 
 plot-nk-optgeo:
 	mkdir -p figures

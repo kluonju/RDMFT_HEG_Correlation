@@ -48,6 +48,28 @@ int main() {
     ExchangeKernel exchange = ExchangeKernel::build(grid);
     HFFunctional hf;
 
+    {
+        const double kf = 1.0;
+        Grid g_logf = Grid::log_fermi_trapezoid(kf, 5.0 * kf, 401u);
+        if (g_logf.n() != 401u) {
+            std::cerr << "FAIL: log_fermi_trapezoid node count\n";
+            ++failures;
+        }
+        bool has_kf = false;
+        for (double k : g_logf.k) {
+            if (std::abs(k - kf) <= 1.0e-12) has_kf = true;
+        }
+        if (!has_kf) {
+            std::cerr << "FAIL: log_fermi_trapezoid should place a node at k_F\n";
+            ++failures;
+        }
+        Grid g_grad = Grid::graded_fermi_trapezoid(kf, 5.0 * kf, 401u);
+        if (g_grad.n() != 401u) {
+            std::cerr << "FAIL: graded_fermi_trapezoid node count\n";
+            ++failures;
+        }
+    }
+
     expect_exception(
         [&] {
             (void)EnergyEvaluator::density(

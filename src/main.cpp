@@ -49,10 +49,11 @@ struct Args {
         0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0
     };
     std::vector<std::string> funcs;  // must be set via --funcs (no silent default list)
-    // Standard sweep (Makefile / nk figures): 401 odd nodes, k_max = 3 k_F;
-    // ``Grid::uniform_trapezoid`` on [0, k_max] (composite trapezoid weights).
+    // Standard sweep (Makefile / nk figures): 401 odd nodes, k_max = 3 k_F.
+    // grid_type: uniform | log | graded | logfermi  (see Grid.hpp).
     int    N_grid = 401;
     double k_max_factor = 3.0;   // k_max = factor * k_F  (default 3 => k/k_F <= 3)
+    std::string grid_type = "uniform";
     std::string out_dir = "data";
     std::string nk_out_dir;  // if non-empty, write n(k) TSVs under this directory
     bool   force = false;
@@ -77,6 +78,8 @@ void print_help() {
         "                       OptGM@... is accepted as a legacy alias for HybOpt@....\n"
         "  --N <int>            #grid points (odd, default 401)\n"
         "  --kmax <float>       k_max = factor * k_F(r_s) at each r_s (default 3)\n"
+        "  --grid <type>        k-mesh: uniform (default), log (dense near k=0),\n"
+        "                       graded (dense near k_F), logfermi (log + Fermi band)\n"
         "  --out-dir <dir>      directory for per-functional TSVs (default data)\n"
         "  --nk-out <dir>       write n(k) to <dir>/<func>_rs<rs>.tsv for each solve.\n"
         "                       If the energy TSV already exists, only n(k) is written\n"
@@ -175,6 +178,7 @@ Args parse_args(int argc, char** argv) {
         else if (s == "--N")         a.N_grid  = parse_int(next(), "--N");
         else if (s == "--kmax")      a.k_max_factor =
                                           parse_finite_double(next(), "--kmax");
+        else if (s == "--grid")      a.grid_type = next();
         else if (s == "--out-dir")   a.out_dir = next();
         else if (s == "--nk-out")    a.nk_out_dir = next();
         else if (s == "--force")     a.force   = true;
@@ -194,6 +198,11 @@ void validate_args(const Args& args) {
     }
     if (!std::isfinite(args.k_max_factor) || args.k_max_factor <= 1.0) {
         throw std::invalid_argument("--kmax must be finite and greater than 1");
+    }
+    if (args.grid_type != "uniform" && args.grid_type != "log"
+        && args.grid_type != "graded" && args.grid_type != "logfermi") {
+        throw std::invalid_argument(
+            "--grid must be 'uniform', 'log', 'graded', or 'logfermi'");
     }
     if (args.rs_list.empty()) {
         throw std::invalid_argument("--rs requires at least one value");
@@ -359,13 +368,21 @@ int run(const Args& args) {
                           << " exists; writing n(k) to " << args.nk_out_dir << "\n";
             }
 
-            // Rebuild the Grid for each rs: uniform k in [0, k_max],
-            // k_max = factor * k_F.
+            // Rebuild the Grid for each rs; k_max = factor * k_F.
             for (double rs : args.rs_list) {
                 const double kf = HEG::kF(rs);
                 const double k_max = args.k_max_factor * kf;
-                Grid g = Grid::uniform_trapezoid(
-                    k_max, static_cast<std::size_t>(args.N_grid));
+                const std::size_t N = static_cast<std::size_t>(args.N_grid);
+                Grid g;
+                if (args.grid_type == "log") {
+                    g = Grid::log_trapezoid(kf, k_max, N);
+                } else if (args.grid_type == "graded") {
+                    g = Grid::graded_fermi_trapezoid(kf, k_max, N);
+                } else if (args.grid_type == "logfermi") {
+                    g = Grid::log_fermi_trapezoid(kf, k_max, N);
+                } else {
+                    g = Grid::uniform_trapezoid(k_max, N);
+                }
                 ExchangeKernel W = ExchangeKernel::build(g);
 
                 const double E_HF_per_N = HEG::HF_per_electron(rs);
