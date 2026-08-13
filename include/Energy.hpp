@@ -134,12 +134,15 @@ struct EnergyEvaluator {
 
         // E_xc = -(1/(2 pi^3)) * \sum_i w_i * k_i * V_i,
         // where V_i already encodes K(n_i, n_j) for both arguments.
+        // Optional density-only XC (LDA/PBE) is added after the JK sum.
         auto V = V_inner(n, g, W, F);
         double s = 0.0;
         for (std::size_t i = 0; i < N; ++i) {
             s += g.w[i] * g.k[i] * V[i];
         }
-        return -s / (2.0 * pi * pi * pi);
+        const double jk = -s / (2.0 * pi * pi * pi);
+        const double rho = density(n, g);
+        return jk + F.density_xc_per_volume(rho);
     }
 
     // Pseudo orbital energy epsilon_i = dE/dn_i (used in Euler-Lagrange).

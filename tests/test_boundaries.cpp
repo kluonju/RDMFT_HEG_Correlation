@@ -108,6 +108,37 @@ int main() {
         [] { (void)OptGeoFunctional(-1.0, 2.0); },
         "OptGeo should reject negative parameters");
 
+    {
+        PbeHfMuFunctional pbe;
+        if (std::abs(pbe.kernel(1.0, 1.0)) > 1.0e-14) {
+            std::cerr << "FAIL: PBEHFmM K(1,1) should be 0\n";
+            ++failures;
+        }
+        if (std::abs(pbe.kernel(0.0, 0.7)) > 1.0e-14) {
+            std::cerr << "FAIL: PBEHFmM K(0,n) should be 0\n";
+            ++failures;
+        }
+        const double ni = 0.4, nj = 0.7;
+        const double h = 1.0e-8;
+        const double fd = (pbe.kernel(ni + h, nj) - pbe.kernel(ni - h, nj)) / (2.0 * h);
+        if (std::abs(pbe.kernel_grad(ni, nj) - fd) > 1.0e-6) {
+            std::cerr << "FAIL: PBEHFmM kernel_grad vs central difference\n";
+            ++failures;
+        }
+        const double rs = 1.0;
+        const double rho = HEG::density(rs);
+        const double expected = rho * (HEG::exchange_per_electron_HF(rs)
+                                       + PW92::ec_per_electron(rs));
+        if (std::abs(pbe.density_xc_per_volume(rho) - expected) > 1.0e-12) {
+            std::cerr << "FAIL: PBEHFmM density_xc_per_volume at rs=1\n";
+            ++failures;
+        }
+        if (pbe.name() != "PBEHFmM") {
+            std::cerr << "FAIL: PBEHFmM name()\n";
+            ++failures;
+        }
+    }
+
     if (failures != 0) {
         std::cerr << failures << " failure(s)\n";
         return 1;

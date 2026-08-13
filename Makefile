@@ -55,7 +55,7 @@ NK_GRID      ?= log
 # Default sweep: only these functionals (edit FUNCS). OptGeo uses ';' — quote for the shell.
 # OptGeo: HF + w*(2*sigmoid(k*x)-1), x=(n-1/2)^2 pair variable (default w=1, k=5).
 # HybOpt: HF/Power mix fit vs PW92 on r_s in [0.2, 6] at N=401 (see data/optimize_optGM_rs6.log).
-FUNCS := Mueller,CGA,CHF,BOW,OptGeo@1;5,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076
+FUNCS := Mueller,CGA,CHF,OptGeo@1;5,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076,PBEHFmM
 
 NK_DIR := data/nk
 NK_FUNCS := $(FUNCS)
@@ -150,6 +150,8 @@ plot: $(DUMP_GZ_BIN)
 	mkdir -p figures
 	python3 scripts/plot_results.py --in $(DATA_DIR) \
 		--out figures/correlation_energy.png
+	python3 scripts/plot_results.py --in $(DATA_DIR) --rs-min 2 \
+		--out figures/correlation_energy_rs2.png
 	python3 scripts/plot_nk.py --dir $(NK_DIR) --rs 0.5,1,5,10 --layout 2x2 \
 		--dump-gz $(DUMP_GZ_BIN) --out figures/nk.png
 	python3 scripts/plot_nk_optgeo.py --dir $(NK_DIR) --rs auto \

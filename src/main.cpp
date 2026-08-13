@@ -71,7 +71,7 @@ void print_help() {
         "                       (HF, Mueller, GU, CGA, CHF, BBC1, BBC3, GEO,\n"
         "                        OptGeo@<w>;<k>, HybOpt@lambda;alpha, Power@<alpha>,\n"
         "                        Beta@<beta>, BOW or BOW@alpha, SymBow or SymBow@alpha,\n"
-        "                        NN@<path/to/model.json>)\n"
+        "                        PBEHFmM, NN@<path/to/model.json>)\n"
         "                       OptGeo: HF + w*(2*sigmoid(k*x)-1), x=(n_i-1/2)^2(n_j-1/2)^2; w,k >= 0.\n"
         "                       HybOpt: (1-lambda) HF + lambda Power(alpha); two floats (one ';').\n"
         "                       Shell: quote keys that contain ';' (e.g. --funcs 'HybOpt@0.4;0.56').\n"

@@ -539,6 +539,7 @@ solve_rdmft(double rs,
     const BBC1Functional*   bbc1      = dynamic_cast<const BBC1Functional*>(&F);
     const BBC3Functional*   bbc3      = dynamic_cast<const BBC3Functional*>(&F);
     const BOWFunctional*    bow       = dynamic_cast<const BOWFunctional*>(&F);
+    const PbeHfMuFunctional* pbehfmu  = dynamic_cast<const PbeHfMuFunctional*>(&F);
 
     double alpha = 1.0;
     if (pf)        alpha = pf->alpha();
@@ -601,7 +602,7 @@ solve_rdmft(double rs,
     const bool needs_multistart = additive || (geo != nullptr)
                                   || (optgeo != nullptr) || (hybopt != nullptr)
                                   || (bbc1 != nullptr) || (bbc3 != nullptr)
-                                  || (bow != nullptr);
+                                  || (bow != nullptr) || (pbehfmu != nullptr);
     const bool uniform_init = opt.init_uniform_n.has_value();
     const std::vector<std::pair<bool, double>> starts = uniform_init
         ? std::vector<std::pair<bool, double>>{{true, 0.0}}

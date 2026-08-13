@@ -8,6 +8,9 @@
 #include <string>
 #include <utility>
 
+#include "HEG.hpp"
+#include "QMC.hpp"
+
 namespace rdmft {
 
 // Base class for RDMFT exchange-correlation functionals applied to the HEG.
@@ -52,6 +55,11 @@ public:
     virtual double kernel_grad(double ni, double nj) const {
         return df(ni) * f(nj);
     }
+
+    // Optional density-only XC contribution per unit volume (e.g. LDA/PBE
+    // on the uniform gas).  Default zero; does not enter deps_xc (absorbed
+    // into the chemical potential via the density constraint).
+    virtual double density_xc_per_volume(double /*rho*/) const { return 0.0; }
 };
 
 // f(n) = n   ->  Hartree-Fock
@@ -490,6 +498,52 @@ private:
     double alpha_;
 };
 
+// PBE + HF − Müller (HEG): in the uniform gas PBE collapses to LDA
+// (Slater exchange + PW92 correlation).  Occupations are determined by the
+// JK kernel difference
+//
+//     K(n_i, n_j) = n_i n_j - sqrt(n_i n_j)   = K_HF - K_Mueller,
+//
+// while the LDA XC energy density is added as a density-only shift
+// (see ``density_xc_per_volume``).  CLI key: ``PBEHFmM``.
+class PbeHfMuFunctional : public Functional {
+public:
+    std::string name() const override { return "PBEHFmM"; }
+    bool is_factorized() const override { return false; }
+
+    // Unused (non-factorized); Müller-like stubs satisfy the abstract API.
+    double f(double n) const override {
+        return n > 0.0 ? std::sqrt(n) : 0.0;
+    }
+    double df(double n) const override {
+        const double eps = 1.0e-14;
+        return 0.5 / std::sqrt(n > eps ? n : eps);
+    }
+
+    double kernel(double ni, double nj) const override {
+        const double a = (ni > 0.0) ? ni : 0.0;
+        const double b = (nj > 0.0) ? nj : 0.0;
+        return a * b - std::sqrt(a) * std::sqrt(b);
+    }
+    double kernel_grad(double ni, double nj) const override {
+        const double eps = 1.0e-14;
+        const double a = (ni > 0.0) ? ni : 0.0;
+        const double b = (nj > 0.0) ? nj : 0.0;
+        const double sa = std::sqrt(a > eps ? a : eps);
+        const double sb = std::sqrt(b);
+        return b - 0.5 * sb / sa;
+    }
+
+    // LDA XC/V = rho * (e_x^Slater(rs) + e_c^PW92(rs)); PBE ≡ LDA for ∇ρ = 0.
+    double density_xc_per_volume(double rho) const override {
+        if (!(rho > 0.0) || !std::isfinite(rho)) return 0.0;
+        constexpr double pi = M_PI;
+        const double rs = std::cbrt(3.0 / (4.0 * pi * rho));
+        return rho * (HEG::exchange_per_electron_HF(rs)
+                      + PW92::ec_per_electron(rs));
+    }
+};
+
 
 // BOW functional [T. Baldsiefen, A. Cangi, F. G. Eich, and E. K. U. Gross,
 // Phys. Rev. A 96, 062508 (2017), Appendix C].  The pair kernel is
@@ -760,6 +814,7 @@ inline std::unique_ptr<Functional> make_functional(const std::string& key,
     if (key == "Power")   return std::make_unique<PowerFunctional>(alpha);
     if (key == "BOW")     return std::make_unique<BOWFunctional>();
     if (key == "SymBow")  return std::make_unique<SymBOWFunctional>();
+    if (key == "PBEHFmM") return std::make_unique<PbeHfMuFunctional>();
     if (key == "BBC1")    return std::make_unique<BBC1Functional>();
     if (key == "BBC3")   return std::make_unique<BBC3Functional>();
     if (key == "GEO")     return std::make_unique<GEOFunctional>();

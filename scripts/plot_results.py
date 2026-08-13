@@ -2,7 +2,7 @@
 """Plot RDMFT correlation energies vs rs from per-functional TSVs.
 
 Reads ``*.tsv`` files under ``--in`` and overlays the PW92 QMC reference with
-Müller, CGA, CHF, BOW, hybopt, Power(0.55/0.58) (see ``plot_common.WANTED_SERIES``).
+Müller, CGA, CHF, hybopt, Power(0.55/0.58), PBEHFmM (see ``plot_common.WANTED_SERIES``).
 Only rows with ``converged == 1`` are plotted (non-converged SCF points are dropped).
 The directory layout matches the rdmft_heg driver:
 
@@ -52,22 +52,29 @@ def _fmt_rs_tick(rs: float) -> str:
     return s if s else str(r)
 
 
-def apply_rs_ticks(ax, series: dict, qmc_rs: list[float]) -> None:
-    """Label every distinct r_s from data on the (log) x-axis; span 0.15–10."""
+def apply_rs_ticks(
+    ax,
+    series: dict,
+    qmc_rs: list[float],
+    *,
+    xlim: tuple[float, float] | None = None,
+) -> None:
+    """Label every distinct r_s from data on the (log) x-axis."""
     tick_vals = {float(r) for r in qmc_rs}
     for pts in series.values():
         for r, _ in pts:
             tick_vals.add(float(r))
     ticks = sorted(tick_vals)
+    x0, x1 = xlim if xlim is not None else (0.15, 11.0)
     if len(ticks) < 2:
-        ax.set_xlim(0.15, 11.0)
+        ax.set_xlim(x0, x1)
         return
     ax.set_xticks(ticks)
     ax.set_xticklabels([_fmt_rs_tick(t) for t in ticks])
     ax.tick_params(axis="x", which="major", labelsize=8)
     for lab in ax.get_xticklabels():
         lab.set_horizontalalignment("center")
-    ax.set_xlim(0.15, 11.0)
+    ax.set_xlim(x0, x1)
 
 
 def parse_tsv(path: Path):
@@ -117,13 +124,31 @@ def main():
                          "(or a single .tsv).  Default: data")
     ap.add_argument("--out", dest="out_path",
                     default="figures/correlation_energy.png")
+    ap.add_argument(
+        "--rs-min",
+        type=float,
+        default=None,
+        help="Only plot points with r_s >= this value (zoom).",
+    )
+    ap.add_argument(
+        "--rs-max",
+        type=float,
+        default=None,
+        help="Only plot points with r_s <= this value.",
+    )
     args = ap.parse_args()
 
     in_path = Path(args.in_path)
+    rs_min = args.rs_min
+    rs_max = args.rs_max
 
     series: dict[str, list[tuple[float, float]]] = {}
     qmc_pairs: list[tuple[float, float]] = []
     for rs, fn, ec, ecq in collect_rows(in_path):
+        if rs_min is not None and rs < rs_min:
+            continue
+        if rs_max is not None and rs > rs_max:
+            continue
         key = legend_key_for_subset(fn)
         if key is None:
             continue
@@ -133,6 +158,7 @@ def main():
     if not qmc_pairs:
         raise SystemExit(
             f"No usable data points for plotted functionals in {in_path}"
+            + (f" with r_s filter [{rs_min}, {rs_max}]" if rs_min or rs_max else "")
         )
 
     qmc = sorted(set(qmc_pairs))
@@ -168,7 +194,15 @@ def main():
             markersize=6 if name == "hybopt" else 5,
         )
 
-    apply_rs_ticks(ax, series, qmc_rs)
+    # X limits: pad slightly around filtered data (or full default span).
+    if rs_min is not None or rs_max is not None:
+        lo_x = min(qmc_rs)
+        hi_x = max(qmc_rs)
+        pad_x = max(0.05 * (hi_x - lo_x), 0.05 * lo_x)
+        xlim = (max(0.05, lo_x - pad_x), hi_x + pad_x)
+    else:
+        xlim = (0.15, 11.0)
+    apply_rs_ticks(ax, series, qmc_rs, xlim=xlim)
     ax.set_xlabel(r"$r_s$ (a.u.)")
     ax.set_ylabel(r"$E_c$ (hartree) per electron ")
     ax.axhline(0, color="0.6", linewidth=0.6, linestyle="-")
@@ -178,7 +212,7 @@ def main():
     if ec_vals:
         lo, hi = min(ec_vals), max(ec_vals)
         span = max(hi - lo, 1e-6)
-        pad = 0.06 * span + 0.005
+        pad = 0.06 * span + 0.002
         ax.set_ylim(lo - pad, hi + pad)
     else:
         ax.set_ylim(-0.20, 0.02)

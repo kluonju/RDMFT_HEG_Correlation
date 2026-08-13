@@ -1,7 +1,7 @@
 """Shared curve list and styles for correlation-energy and n(k) figures.
 
 ``WANTED_SERIES`` / ``WANTED_SET`` define which functionals appear in both plots
-(Müller, CGA, CHF, BOW, Power curves, hybopt = HybOpt HF/Power mix).
+(Müller, CGA, CHF, Power curves, hybopt, PBEHFmM).
 """
 
 from __future__ import annotations
@@ -12,9 +12,9 @@ WANTED_SERIES = (
     "Mueller",
     "CGA",
     "CHF",
-    "BOW",
     "Power(0.55)",
     "Power(0.58)",
+    "PBEHFmM",
     "hybopt",
 )
 
@@ -31,6 +31,7 @@ SUBSET_STYLE: dict[str, tuple[str | None, str, str | None]] = {
     "CHF": ("#9467bd", "--", "^"),
     "BOW": ("#8c564b", "--", "v"),
     "optGeo": ("#006400", "--", "h"),
+    "PBEHFmM": ("#e377c2", "--", "P"),
     # Solid blue + diamonds + drawn last (stands out vs dashed RDMFT curves).
     "hybopt": ("#1f77b4", "-", "D"),
     "Power(0.55)": ("#d62728", "--", "s"),

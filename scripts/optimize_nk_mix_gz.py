@@ -51,7 +51,6 @@ CANDIDATE_KEYS = (
     "Mueller",
     "CGA",
     "CHF",
-    "BOW",
     "Power(0.55)",
     "Power(0.58)",
     "hybopt",
