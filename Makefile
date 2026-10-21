@@ -65,7 +65,7 @@ ENERGY_FLAGS := --N $(N_GRID) --kmax $(ENERGY_KMAX) --kmax-abs $(ENERGY_KMAX_ABS
 # Default sweep: only these functionals (edit FUNCS). OptGeo uses ';' — quote for the shell.
 # OptGeo: HF + w*(2*sigmoid(k*x)-1), x=(n-1/2)^2 pair variable (default w=1, k=5).
 # HybOpt: HF/Power mix fit vs PW92 on r_s in [0.2, 6] at N=401 (see data/optimize_optGM_rs6.log).
-FUNCS := Mueller,CGA,CHF,OptGeo@1;5,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076,PBEHFmM,rs@0.2;0.5,rs@0.2;0.55,rs@0.5;0.55,rs@2;0.55,rs3@0.2;0.5,rs3@0.2;0.55,rs3@0.5;0.55,rs3@2;0.55
+FUNCS := Mueller,CGA,CHF,OptGeo@1;5,Power@0.55,Power@0.58,Power@0.65,HybOpt@0.938328;0.541076,PBEHFmM,rs@0.2;0.5,rs@0.2;0.55,rs@0.5;0.55,rs@2;0.55,rs3@0.2;0.5,rs3@0.2;0.55,rs3@0.5;0.55,rs3@2;0.55
 
 NK_DIR := data/nk
 # n(k) export uses the same functional set as energy sweeps.
@@ -156,6 +156,8 @@ plot: $(DUMP_GZ_BIN)
 	mkdir -p figures
 	python3 scripts/plot_results.py --in $(DATA_DIR) \
 		--out figures/correlation_energy.png
+	python3 scripts/plot_results.py --in $(DATA_DIR) --no-rs --no-hybopt \
+		--out figures/correlation_energy_no_rs.png
 	python3 scripts/plot_results.py --in $(DATA_DIR) --rs-min 2 \
 		--out figures/correlation_energy_rs2.png
 	python3 scripts/plot_nk.py --dir $(NK_DIR) --rs 0.5,1,5,10 --layout 2x2 \

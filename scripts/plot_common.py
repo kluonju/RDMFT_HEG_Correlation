@@ -17,6 +17,7 @@ WANTED_SERIES = (
     "CHF",
     "Power(0.55)",
     "Power(0.58)",
+    "Power(0.65)",
     "hybopt",
 )
 
@@ -38,6 +39,7 @@ SUBSET_STYLE: dict[str, tuple[str | None, str, str | None]] = {
     "hybopt": ("#1f77b4", "-", "D"),
     "Power(0.55)": ("#d62728", "--", "s"),
     "Power(0.58)": ("#2ca02c", "--", "o"),
+    "Power(0.65)": ("#393b79", "--", "^"),
     # Post-hoc 0.243 CGA + 0.757 Power(0.58) energy mix (see nk_mix_gz_best.json).
     "CGA+Power(0.58)": ("#393b79", "-.", "*"),
 }

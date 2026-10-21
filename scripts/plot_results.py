@@ -181,6 +181,16 @@ def main():
         help="Only plot points with r_s <= this value.",
     )
     ap.add_argument(
+        "--no-rs",
+        action="store_true",
+        help="Omit rs, rs2, and rs3 curves.",
+    )
+    ap.add_argument(
+        "--no-hybopt",
+        action="store_true",
+        help="Omit the hybopt curve.",
+    )
+    ap.add_argument(
         "--mix-json",
         type=Path,
         default=Path("data/nk_mix_gz_best.json"),
@@ -203,6 +213,12 @@ def main():
             continue
         key = legend_key_for_subset(fn)
         if key is None:
+            continue
+        if args.no_rs and (
+            is_rs_series(key) or is_rs2_series(key) or is_rs3_series(key)
+        ):
+            continue
+        if args.no_hybopt and key == "hybopt":
             continue
         series_map.setdefault(key, {})[rs] = ec
         qmc_pairs.append((rs, ecq))
