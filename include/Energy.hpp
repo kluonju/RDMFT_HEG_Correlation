@@ -8,6 +8,7 @@
 #include "ExchangeKernel.hpp"
 #include "Functional.hpp"
 #include "Grid.hpp"
+#include "HEG.hpp"
 
 namespace rdmft {
 
@@ -122,8 +123,8 @@ struct EnergyEvaluator {
         return V;
     }
 
-    // E_xc/V using the functional's two-body kernel and product integration.
-    static double xc_per_volume(const std::vector<double>& n,
+    // JK-only energy per volume (no density-only piece).
+    static double jk_per_volume(const std::vector<double>& n,
                                 const Grid& g,
                                 const ExchangeKernel& W,
                                 const Functional& F) {
@@ -131,18 +132,41 @@ struct EnergyEvaluator {
         validate_exchange(g, W);
         constexpr double pi = M_PI;
         const std::size_t N = g.n();
-
-        // E_xc = -(1/(2 pi^3)) * \sum_i w_i * k_i * V_i,
-        // where V_i already encodes K(n_i, n_j) for both arguments.
-        // Optional density-only XC (LDA/PBE) is added after the JK sum.
         auto V = V_inner(n, g, W, F);
         double s = 0.0;
         for (std::size_t i = 0; i < N; ++i) {
             s += g.w[i] * g.k[i] * V[i];
         }
-        const double jk = -s / (2.0 * pi * pi * pi);
+        return -s / (2.0 * pi * pi * pi);
+    }
+
+    // E_xc/V using the functional's two-body kernel and product integration.
+    // Optional ``W_lr``:
+    //   * uses_lr_power_exchange(): Exc = density_xc + E_Power(α)[W_LR]
+    //     (no bare-Coulomb JK).
+    //   * uses_lr_power_correlation(): add (E_Power(α) − E_HF) on W_LR.
+    static double xc_per_volume(const std::vector<double>& n,
+                                const Grid& g,
+                                const ExchangeKernel& W,
+                                const Functional& F,
+                                const ExchangeKernel* W_lr = nullptr) {
         const double rho = density(n, g);
-        return jk + F.density_xc_per_volume(rho);
+        if (W_lr != nullptr && F.uses_lr_power_exchange()) {
+            validate_exchange(g, *W_lr);
+            const PowerFunctional power(F.lr_power_alpha());
+            return F.density_xc_per_volume(rho)
+                 + jk_per_volume(n, g, *W_lr, power);
+        }
+        const double jk = jk_per_volume(n, g, W, F);
+        double e = jk + F.density_xc_per_volume(rho);
+        if (W_lr != nullptr && F.uses_lr_power_correlation()) {
+            validate_exchange(g, *W_lr);
+            const PowerFunctional power(F.lr_power_alpha());
+            const HFFunctional hf;
+            e += jk_per_volume(n, g, *W_lr, power)
+               - jk_per_volume(n, g, *W_lr, hf);
+        }
+        return e;
     }
 
     // Pseudo orbital energy epsilon_i = dE/dn_i (used in Euler-Lagrange).
@@ -158,7 +182,13 @@ struct EnergyEvaluator {
     static std::vector<double> deps_xc(const std::vector<double>& n,
                                        const Grid& g,
                                        const ExchangeKernel& W,
-                                       const Functional& F) {
+                                       const Functional& F,
+                                       const ExchangeKernel* W_lr = nullptr) {
+        if (W_lr != nullptr && F.uses_lr_power_exchange()) {
+            validate_exchange(g, *W_lr);
+            const PowerFunctional power(F.lr_power_alpha());
+            return deps_xc(n, g, *W_lr, power, nullptr);
+        }
         validate_grid_vector(n, g);
         validate_exchange(g, W);
         constexpr double pi = M_PI;
@@ -188,35 +218,98 @@ struct EnergyEvaluator {
                       * (g.w[i] * direct + transpose)
                       / (pi * pi * pi);
             }
-            return de;
-        }
-        // General kernel: include both appearances of n_i in the symmetric
-        // double sum. W and W^T rows keep both inner traversals contiguous.
+        } else {
+            // General kernel: include both appearances of n_i in the symmetric
+            // double sum. W and W^T rows keep both inner traversals contiguous.
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) if (N > 64)
 #endif
-        for (std::size_t i = 0; i < N; ++i) {
-            const double ki = g.k[i];
-            const double* direct_row = W.w_row(i);
-            const double* transpose_row = W.wt_row(i);
-            double direct = 0.0;
-            double transpose = 0.0;
-            for (std::size_t j = 0; j < N; ++j) {
-                const double gradient = F.kernel_grad(n[i], n[j]);
-                direct += direct_row[j] * g.k[j] * gradient;
-                transpose += g.w[j] * g.k[j] * transpose_row[j] * gradient;
+            for (std::size_t i = 0; i < N; ++i) {
+                const double ki = g.k[i];
+                const double* direct_row = W.w_row(i);
+                const double* transpose_row = W.wt_row(i);
+                double direct = 0.0;
+                double transpose = 0.0;
+                for (std::size_t j = 0; j < N; ++j) {
+                    const double gradient = F.kernel_grad(n[i], n[j]);
+                    direct += direct_row[j] * g.k[j] * gradient;
+                    transpose += g.w[j] * g.k[j] * transpose_row[j] * gradient;
+                }
+                de[i] = -0.5 * ki * (g.w[i] * direct + transpose)
+                      / (pi * pi * pi);
             }
-            de[i] = -0.5 * ki * (g.w[i] * direct + transpose)
-                  / (pi * pi * pi);
+        }
+        if (W_lr != nullptr && F.uses_lr_power_correlation()) {
+            validate_exchange(g, *W_lr);
+            const PowerFunctional power(F.lr_power_alpha());
+            const HFFunctional hf;
+            auto d_pow = deps_xc(n, g, *W_lr, power, nullptr);
+            auto d_hf = deps_xc(n, g, *W_lr, hf, nullptr);
+            for (std::size_t i = 0; i < N; ++i) {
+                de[i] += d_pow[i] - d_hf[i];
+            }
         }
         return de;
+    }
+
+    // Density-matched Fermi step on the discrete grid (fractional edge node).
+    // Used as the numerical HF reference so E_c = E − E_HF is free of the
+    // O(Δk) quadrature bias that dominates the analytic HF subtraction at
+    // small r_s on coarse uniform meshes.
+    static std::vector<double> hf_step_occupation(double rs, const Grid& g) {
+        if (g.k.empty() || g.k.size() != g.w.size()) {
+            throw std::invalid_argument("hf_step_occupation: invalid grid");
+        }
+        const double kf = HEG::kF(rs);
+        const double rho_target = HEG::density(rs);
+        std::vector<double> n(g.n(), 0.0);
+        std::size_t edge = 0;
+        double best = std::numeric_limits<double>::infinity();
+        for (std::size_t i = 0; i < g.n(); ++i) {
+            n[i] = (g.k[i] < kf) ? 1.0 : 0.0;
+            const double d = std::abs(g.k[i] - kf);
+            if (d < best) {
+                best = d;
+                edge = i;
+            }
+        }
+        double lo = 0.0;
+        double hi = 1.0;
+        for (int it = 0; it < 64; ++it) {
+            const double mid = 0.5 * (lo + hi);
+            n[edge] = mid;
+            if (density(n, g) > rho_target) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        n[edge] = 0.5 * (lo + hi);
+        return n;
+    }
+
+    // HF energy per electron on the same (g, W) used for the RDMFT solve.
+    static double hf_per_electron_on_grid(double rs,
+                                          const Grid& g,
+                                          const ExchangeKernel& W) {
+        const HFFunctional hf;
+        const auto n = hf_step_occupation(rs, g);
+        const double rho = density(n, g);
+        if (!(rho > 0.0) || !std::isfinite(rho)) {
+            return HEG::HF_per_electron(rs);
+        }
+        const double E =
+            kinetic_per_volume(n, g) + xc_per_volume(n, g, W, hf);
+        const double e = E / rho;
+        return std::isfinite(e) ? e : HEG::HF_per_electron(rs);
     }
 
     // Total epsilon_i = T_i + Vxc_i = k_i^2/2 + d(E_xc)/dn_i.
     static std::vector<double> pseudo_energy(const std::vector<double>& n,
                                              const Grid& g,
                                              const ExchangeKernel& W,
-                                             const Functional& F) {
+                                             const Functional& F,
+                                             const ExchangeKernel* W_lr = nullptr) {
         // Note: T = (1/(2 pi^2)) * \int w_i k_i^4 n(k) dk -> dT/dn_i = (1/(2 pi^2)) w_i k_i^4.
         // But the EL equation balances the *energy density derivative* by the
         // same factor on both sides; absorbing the w_i factor uniformly we
@@ -230,7 +323,7 @@ struct EnergyEvaluator {
         constexpr double pi = M_PI;
         const std::size_t N = g.n();
         std::vector<double> eps(N, 0.0);
-        auto de = deps_xc(n, g, W, F);   // d E_xc/V / d n_i (raw)
+        auto de = deps_xc(n, g, W, F, W_lr);   // d E_xc/V / d n_i (raw)
         for (std::size_t i = 0; i < N; ++i) {
             const double ki = g.k[i];
             const double pref = (g.w[i] * ki * ki / (pi * pi));

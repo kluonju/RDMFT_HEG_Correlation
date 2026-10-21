@@ -13,13 +13,13 @@ Example::
     python3 scripts/plot_nk.py --dir data/nk --rs 0.5,1,5,10 --layout 2x2 \
         --out figures/nk.png
 
-Only functionals listed in ``plot_common.WANTED_SERIES`` are drawn (same as
-the correlation-energy figure, including CGA and CHF). By default each panel
-also overlays the Gori-Giorgi/Ziesche (GZ) reference n(k) from
-``build/dump_gz_grid``. The default x-axis is ``0 <= k/k_F <= 3`` (override
-with ``--xmax``); driver exports may use a larger ``--kmax``.
-nk TSVs that declare ``# converged: 0`` are excluded; legacy exports without
-that line are still plotted.
+Functionals in ``plot_common.WANTED_SERIES`` are drawn, plus any
+``rs`` series allowed by ``plot_common.is_rs_series`` (same set as
+the correlation-energy figure). By default each panel also overlays the
+Gori-Giorgi/Ziesche (GZ) reference n(k) from ``build/dump_gz_grid``. The
+default x-axis is ``0 <= k/k_F <= 3`` (override with ``--xmax``); driver
+exports may use a larger ``--kmax``. nk TSVs that declare ``# converged: 0``
+are excluded; legacy exports without that line are still plotted.
 """
 from __future__ import annotations
 
@@ -38,11 +38,12 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 from plot_common import (  # noqa: E402
-    SUBSET_STYLE,
     WANTED_SERIES,
     WANTED_SET,
+    is_rs_series,
     legend_label,
     pretty_functional_name,
+    style_for_series,
 )
 
 # GZ reference: solid black, no markers (stands apart from dashed RDMFT curves).
@@ -161,7 +162,8 @@ def discover_rs_auto(nk_dir: Path) -> list[float]:
             continue
         if conv is False:
             continue
-        if pretty_functional_name(fn) not in WANTED_SET:
+        key = pretty_functional_name(fn)
+        if key not in WANTED_SET and not is_rs_series(key):
             continue
         seen.add(rs_h)
     return sorted(seen)
@@ -329,6 +331,7 @@ def main() -> None:
 
         order = {n: i for i, n in enumerate(WANTED_SERIES)}
         loaded: list[tuple[int, Path, dict]] = []
+        rs_loaded: list[tuple[str, Path, dict]] = []
         for p in files:
             d = load_nk_tsv(p)
             if d["kF"] is None or d["k"].size == 0:
@@ -337,12 +340,14 @@ def main() -> None:
             if d.get("nk_converged") is False:
                 continue
             key = pretty_functional_name(d["functional"])
-            if key not in WANTED_SET:
-                continue
-            loaded.append((order.get(key, 99), p, d))
+            if key in WANTED_SET:
+                loaded.append((order.get(key, 99), p, d))
+            elif is_rs_series(key):
+                rs_loaded.append((key, p, d))
         loaded.sort(key=lambda t: t[0])
+        rs_loaded.sort(key=lambda t: t[0])
 
-        if not loaded:
+        if not loaded and not rs_loaded:
             missing_filtered.append(rs_want)
             ax.text(
                 0.5,
@@ -358,7 +363,7 @@ def main() -> None:
             kf = float(d["kF"])
             x = d["k"] / kf
             key = pretty_functional_name(d["functional"])
-            c, ls, mk = SUBSET_STYLE[key]
+            c, ls, mk = style_for_series(key)
             ax.plot(
                 x,
                 d["n"],
@@ -367,6 +372,21 @@ def main() -> None:
                 marker=mk,
                 markevery=max(1, len(x) // 60),
                 markersize=5 if key == "hybopt" else 4,
+                linewidth=1.4,
+                label=legend_label(key),
+            )
+        for key, _p, d in rs_loaded:
+            kf = float(d["kF"])
+            x = d["k"] / kf
+            c, ls, mk = style_for_series(key)
+            ax.plot(
+                x,
+                d["n"],
+                ls,
+                color=c,
+                marker=mk,
+                markevery=max(1, len(x) // 60),
+                markersize=4,
                 linewidth=1.4,
                 label=legend_label(key),
             )

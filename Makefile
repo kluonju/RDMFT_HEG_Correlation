@@ -3,9 +3,9 @@
 # Usage:
 #   make            -- build the main driver and the test binary
 #   make run        -- only functionals in FUNCS; incremental (skip existing data/*.tsv).
-#   make rerun      -- same flags as run plus --force (overwrite every FUNCS TSV).  Both use the
-#                      driver's uniform k mesh on [0, k_max] (Grid::uniform_trapezoid in main.cpp),
-#                      default N_GRID=401 and --init-uniform 0.5 (override: make rerun N_GRID=801).
+#   make rerun      -- same flags as run plus --force (overwrite every FUNCS TSV).  Energy sweeps
+#                      use a log k-mesh with k_max = max(ENERGY_KMAX*k_F, ENERGY_KMAX_ABS)
+#                      (needed for Müller E/N→−1/8 at large r_s; default N_GRID=401).
 #   make geo        -- (re)compute only the GEO functional into data/GEO.tsv
 #   make optgeo     -- (re)compute optGeo (angles from data/log optimization)
 #   make plot       -- all figures: correlation_energy, nk, nk_optgeo, nk_hybopt
@@ -42,22 +42,33 @@ DUMP_GZ_BIN := $(BIN_DIR)/dump_gz_grid
 HEADERS := $(wildcard include/*.hpp)
 
 DATA_DIR := data
-RS_LIST  := 0.2,0.3,0.5,1,2,3,4,5,6,8,10
+RS_LIST  := 0.01,0.02,0.03,0.05,0.08,0.1,0.2,0.3,0.5,1,2,3,4,5,6,8,10,20,30,50,80,100
 # Default k-grid size and uniform initial occupation (passed to rdmft_heg).
 N_GRID       ?= 401
 INIT_UNIFORM ?= 0.5
+# Energy-sweep k-mesh: k_max=max(factor*k_F, abs). Abs floor recovers Müller
+# E/N→−1/8 at large r_s; auto = graded+dense N (high dens) / log (dilute).
+# factor=3 truncates the high-k tail at r_s≲0.5 (~1 mHa on CGA/Müller E_c);
+# factor=5 is within ~0.1 mHa of factor=6 while staying on the graded mesh
+# (auto switches to log only when k_max > 6 k_F).
+ENERGY_GRID     ?= auto
+ENERGY_KMAX     ?= 5
+ENERGY_KMAX_ABS ?= 10
 # n(k) export: integrate / solve out to NK_KMAX * k_F (plot default xmax = 3).
 NK_KMAX      ?= 20
 # n(k) uses a denser log mesh by default (odd N); energy sweeps keep N_GRID.
 NK_N_GRID    ?= 1201
 # n(k) k-mesh: log (default) | logfermi | graded | uniform.
 NK_GRID      ?= log
+ENERGY_FLAGS := --N $(N_GRID) --kmax $(ENERGY_KMAX) --kmax-abs $(ENERGY_KMAX_ABS) \
+	--grid $(ENERGY_GRID) --init-uniform $(INIT_UNIFORM)
 # Default sweep: only these functionals (edit FUNCS). OptGeo uses ';' — quote for the shell.
 # OptGeo: HF + w*(2*sigmoid(k*x)-1), x=(n-1/2)^2 pair variable (default w=1, k=5).
 # HybOpt: HF/Power mix fit vs PW92 on r_s in [0.2, 6] at N=401 (see data/optimize_optGM_rs6.log).
-FUNCS := Mueller,CGA,CHF,OptGeo@1;5,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076,PBEHFmM
+FUNCS := Mueller,CGA,CHF,OptGeo@1;5,Power@0.55,Power@0.58,HybOpt@0.938328;0.541076,PBEHFmM,rs@0.2;0.5,rs@0.2;0.55,rs@0.5;0.55,rs@2;0.55,rs3@0.2;0.5,rs3@0.2;0.55,rs3@0.5;0.55,rs3@2;0.55
 
 NK_DIR := data/nk
+# n(k) export uses the same functional set as energy sweeps.
 NK_FUNCS := $(FUNCS)
 
 TEST_NN_BIN := $(BIN_DIR)/test_nn_functional
@@ -92,57 +103,52 @@ $(TEST_NN_BIN): tests/test_nn_functional.cpp src/NNFunctional.cpp $(HEADERS) | $
 $(TEST_SOLVER_BIN): tests/test_solver_robustness.cpp $(HEADERS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_solver_robustness.cpp -o $@
 
-$(TEST_BOUNDARIES_BIN): tests/test_boundaries.cpp $(HEADERS) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_boundaries.cpp -o $@
+$(TEST_BOUNDARIES_BIN): tests/test_boundaries.cpp src/NNFunctional.cpp $(HEADERS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/test_boundaries.cpp src/NNFunctional.cpp -o $@
 
 # Incremental sweep: skip functionals whose data/<name>.tsv already exists.
 # Adding a new functional therefore only runs that functional, leaving the
 # previously-computed ones untouched.
 run: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N $(N_GRID) --kmax 3 \
+	./$(TARGET) $(ENERGY_FLAGS) \
 		--rs $(RS_LIST) \
 		--funcs "$(FUNCS)" \
-		--init-uniform $(INIT_UNIFORM) \
 		--out-dir $(DATA_DIR)
 
 # Full rebuild: --force overwrites every functional's TSV.
 rerun: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N $(N_GRID) --kmax 3 \
+	./$(TARGET) $(ENERGY_FLAGS) \
 		--rs $(RS_LIST) \
 		--funcs "$(FUNCS)" \
-		--init-uniform $(INIT_UNIFORM) \
 		--out-dir $(DATA_DIR) \
 		--force
 
 # Convenience target: only refresh GEO (e.g. after tweaking its kernel).
 geo: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N $(N_GRID) --kmax 3 \
+	./$(TARGET) $(ENERGY_FLAGS) \
 		--rs $(RS_LIST) \
 		--funcs GEO \
-		--init-uniform $(INIT_UNIFORM) \
 		--out-dir $(DATA_DIR) \
 		--force
 
 # Angles match ``data/log`` recommended CLI (rounded); change if you re-fit.
 optgeo: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N $(N_GRID) --kmax 3 \
+	./$(TARGET) $(ENERGY_FLAGS) \
 		--rs $(RS_LIST) \
 		--funcs "OptGeo@1;5" \
-		--init-uniform $(INIT_UNIFORM) \
 		--out-dir $(DATA_DIR) \
 		--force
 
 # Refit HybOpt (lambda; alpha) only; matches FUNCS HybOpt@… (edit there + here if you re-fit).
 hybopt: $(TARGET)
 	mkdir -p $(DATA_DIR)
-	./$(TARGET) --N $(N_GRID) --kmax 3 \
+	./$(TARGET) $(ENERGY_FLAGS) \
 		--rs $(RS_LIST) \
 		--funcs 'HybOpt@0.938328;0.541076' \
-		--init-uniform $(INIT_UNIFORM) \
 		--out-dir $(DATA_DIR) \
 		--force
 

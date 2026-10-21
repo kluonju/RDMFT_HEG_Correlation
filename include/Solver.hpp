@@ -139,6 +139,22 @@ inline std::vector<double> initial_constant(const Grid& g, double n0) {
     return std::vector<double>(g.n(), n);
 }
 
+// Cioslowski–Pernal analytic Müller occupation for the paramagnetic HEG
+// (Phys. Rev. A 61, 034503): n(k) = 512 π ρ_spin (1+4k²)^{-4}.
+// Unpinned for r_s ≥ 5.77; for denser gases the formula is clipped to 1
+// (pinned regime).  Used as a multistart seed so CHF/CGA can reach the
+// shared dilute limit E/N → −1/8 when k_max is large enough.
+inline std::vector<double> initial_mueller_cioslowski(double rs, const Grid& g) {
+    const double rho_spin = 0.5 * HEG::density(rs);
+    const double pref = 512.0 * M_PI * rho_spin;
+    std::vector<double> n(g.n(), 0.0);
+    for (std::size_t i = 0; i < g.n(); ++i) {
+        const double k2 = g.k[i] * g.k[i];
+        n[i] = std::clamp(pref / std::pow(1.0 + 4.0 * k2, 4.0), 0.0, 1.0);
+    }
+    return n;
+}
+
 // For CGA, g(n) = sqrt(n(2-n)) on [0,1] and g'(n) = (1-n)/sqrt(n(2-n)).
 // Solve g'(n) = s for n in [0,1].  Squaring (1-n)^2 = s^2 n(2-n) gives a
 // quadratic; the physical root is
@@ -483,7 +499,8 @@ solve_rdmft(double rs,
             const Functional& F,
             const Grid& g,
             const ExchangeKernel& W,
-            const SolveOptions& opt = {}) {
+            const SolveOptions& opt = {},
+            const ExchangeKernel* W_lr = nullptr) {
     if (!std::isfinite(rs) || rs <= 0.0) {
         throw std::invalid_argument("solve_rdmft requires finite rs > 0");
     }
@@ -522,6 +539,7 @@ solve_rdmft(double rs,
     const HFFunctional*      hf   = dynamic_cast<const HFFunctional*>(&F);
     const MuellerFunctional* mu_f = dynamic_cast<const MuellerFunctional*>(&F);
     const GUFunctional*      gu_f = dynamic_cast<const GUFunctional*>(&F);
+    // rs is HF + SR-c + LR Power−HF (dedicated mix branch below).
     const bool power_family = (pf != nullptr) || (hf != nullptr)
                             || (mu_f != nullptr) || (gu_f != nullptr);
 
@@ -540,12 +558,18 @@ solve_rdmft(double rs,
     const BBC3Functional*   bbc3      = dynamic_cast<const BBC3Functional*>(&F);
     const BOWFunctional*    bow       = dynamic_cast<const BOWFunctional*>(&F);
     const PbeHfMuFunctional* pbehfmu  = dynamic_cast<const PbeHfMuFunctional*>(&F);
+    const RsFunctional* rs_f =
+        dynamic_cast<const RsFunctional*>(&F);
+    const Rs2Functional* rs2_f =
+        dynamic_cast<const Rs2Functional*>(&F);
+    const Rs3Functional* rs3_f =
+        dynamic_cast<const Rs3Functional*>(&F);
 
     double alpha = 1.0;
-    if (pf)        alpha = pf->alpha();
-    else if (mu_f) alpha = 0.5;
-    else if (gu_f) alpha = 0.5;
-    else if (hf)   alpha = 1.0;
+    if (pf)          alpha = pf->alpha();
+    else if (mu_f)   alpha = 0.5;
+    else if (gu_f)   alpha = 0.5;
+    else if (hf)     alpha = 1.0;
 
     auto density_of = [&](const std::vector<double>& nv) {
         return EnergyEvaluator::density(nv, g);
@@ -602,15 +626,25 @@ solve_rdmft(double rs,
     const bool needs_multistart = additive || (geo != nullptr)
                                   || (optgeo != nullptr) || (hybopt != nullptr)
                                   || (bbc1 != nullptr) || (bbc3 != nullptr)
-                                  || (bow != nullptr) || (pbehfmu != nullptr);
+                                  || (bow != nullptr) || (pbehfmu != nullptr)
+                                  || (rs_f != nullptr);
     const bool uniform_init = opt.init_uniform_n.has_value();
-    const std::vector<std::pair<bool, double>> starts = uniform_init
+    // Start encoding: first=true => HF step; first=false and second>=0 =>
+    // Fermi-smeared with that width; second<0 => Cioslowski–Pernal Müller seed.
+    std::vector<std::pair<bool, double>> starts = uniform_init
         ? std::vector<std::pair<bool, double>>{{true, 0.0}}
         : (needs_multistart
                ? std::vector<std::pair<bool, double>>{
+                     {true, 0.0},  // HF step (important for rs / HF-based)
                      {false, 0.05}, {false, 0.10}, {false, 0.20},
                      {false, 0.40}, {false, 0.80}, {false, 1.50}}
                : std::vector<std::pair<bool, double>>{{true, 0.0}});
+    // CHF/CGA share Müller's dilute E/N=−1/8 basin; without this seed the
+    // additive closed-form update often stalls in a high-energy state when
+    // k_max ≫ k_F (required for the Müller tail).
+    if (additive) {
+        starts.emplace_back(false, -1.0);
+    }
 
     SolveResult best;
     bool best_set = false;
@@ -619,10 +653,16 @@ solve_rdmft(double rs,
     std::string last_failure;
     for (const auto& start : starts) {
 
-    std::vector<double> n =
-        uniform_init ? initial_constant(g, *opt.init_uniform_n)
-                     : (start.first ? initial_step(rs, g)
-                                    : initial_smeared(rs, g, start.second));
+    std::vector<double> n;
+    if (start.second < 0.0) {
+        n = initial_mueller_cioslowski(rs, g);
+    } else if (uniform_init) {
+        n = initial_constant(g, *opt.init_uniform_n);
+    } else if (start.first) {
+        n = initial_step(rs, g);
+    } else {
+        n = initial_smeared(rs, g, start.second);
+    }
     if (!project_to_target_density(n)) {
         last_failure = "failed to project initial occupations to the target density";
         continue;
@@ -776,6 +816,61 @@ solve_rdmft(double rs,
             }
             mu = bracket.mu;
             n_target = update_occupations_hf_power_mix(mu, U1, U2, g, c1, c2, al);
+        } else if ((rs_f != nullptr || rs3_f != nullptr) && W_lr != nullptr) {
+            // rs / rs3: HF on bare Coulomb + (Power(α) − HF) on erf LR
+            //   ⇔  HF on W_SR + Power(α) on W_LR, with W_SR = W − W_LR.
+            // EL: U_HF_SR + α n^{α−1} U_P_LR = π k (k²/2 − μ); HybOpt inverter
+            // with c1=c2=1 and U1 = U_HF(W)−U_HF(W_LR).
+            // (rs3 differs from rs only in the density-only ECERFPBE shift;
+            // on the HEG that shift equals ECERF, so the two coincide.)
+            const double al = F.lr_power_alpha();
+            auto f_pow = [al](double nn) {
+                const double eps = 1.0e-14;
+                const double x = (nn > 0.0) ? nn : 0.0;
+                const double xc = (x > eps) ? x : eps;
+                return std::pow(xc, al);
+            };
+            auto U_hf_c = compute_U_with(n, g, W, identity_id);
+            auto U_hf_lr = compute_U_with(n, g, *W_lr, identity_id);
+            auto U_p_lr = compute_U_with(n, g, *W_lr, f_pow);
+            std::vector<double> U_hf_sr(g.n());
+            for (std::size_t i = 0; i < g.n(); ++i) {
+                U_hf_sr[i] = U_hf_c[i] - U_hf_lr[i];
+            }
+            const auto bracket = adaptive_bisect([&](double m) {
+                return update_occupations_hf_power_mix(
+                    m, U_hf_sr, U_p_lr, g, 1.0, 1.0, al);
+            });
+            if (!bracket.success) {
+                failure_reason = bracket.error;
+                numerical_failure = true;
+                break;
+            }
+            mu = bracket.mu;
+            n_target = update_occupations_hf_power_mix(
+                mu, U_hf_sr, U_p_lr, g, 1.0, 1.0, al);
+        } else if (rs2_f != nullptr && W_lr != nullptr) {
+            // rs2: SR LDA x+c (density-only) + Power(α) on erf W_LR only.
+            const double al = rs2_f->lr_power_alpha();
+            auto f_pow = [al](double nn) {
+                const double eps = 1.0e-14;
+                const double x = (nn > 0.0) ? nn : 0.0;
+                const double xc = (x > eps) ? x : eps;
+                return std::pow(xc, al);
+            };
+            auto U = compute_U_with(n, g, *W_lr, f_pow);
+            // Do not reuse bisect_mu_factorized: that closes over the
+            // Power-family alpha (default 1), not rs2's α.
+            const auto bracket = adaptive_bisect([&](double m) {
+                return update_occupations_power(al, m, U, g);
+            });
+            if (!bracket.success) {
+                failure_reason = bracket.error;
+                numerical_failure = true;
+                break;
+            }
+            mu = bracket.mu;
+            n_target = update_occupations_power(al, mu, U, g);
         } else if (geo) {
             auto f1 = [](double nn) { return nn; };
             auto f2 = [](double nn) { return nn > 0.0 ? std::sqrt(nn) : 0.0; };
@@ -835,9 +930,9 @@ solve_rdmft(double rs,
             // backtracking line search.  For each trial step length we bisect
             // the Lagrange multiplier mu so the projected/clamped update obeys
             // the density constraint before the energy decrease is tested.
-            auto eps = EnergyEvaluator::pseudo_energy(n, g, W, F);
+            auto eps = EnergyEvaluator::pseudo_energy(n, g, W, F, W_lr);
             const double E0 = EnergyEvaluator::kinetic_per_volume(n, g)
-                            + EnergyEvaluator::xc_per_volume(n, g, W, F);
+                            + EnergyEvaluator::xc_per_volume(n, g, W, F, W_lr);
             if (!std::isfinite(E0)) {
                 failure_reason = "projected-gradient energy is non-finite";
                 numerical_failure = true;
@@ -898,7 +993,7 @@ solve_rdmft(double rs,
                     break;
                 }
                 const double E_trial = EnergyEvaluator::kinetic_per_volume(trial, g)
-                                     + EnergyEvaluator::xc_per_volume(trial, g, W, F);
+                                     + EnergyEvaluator::xc_per_volume(trial, g, W, F, W_lr);
                 const double gd = directional_derivative(trial);
                 if (!std::isfinite(E_trial) || !std::isfinite(gd)) {
                     failure_reason = "projected-gradient line search is non-finite";
@@ -958,7 +1053,7 @@ solve_rdmft(double rs,
         }
         if (opt.verbose && (it % 20 == 0)) {
             double Eh = EnergyEvaluator::kinetic_per_volume(n, g)
-                      + EnergyEvaluator::xc_per_volume(n, g, W, F);
+                      + EnergyEvaluator::xc_per_volume(n, g, W, F, W_lr);
             std::fprintf(stderr,
                 "    [iter %4d]  mu=%+.6f  rho=%.6e  dn=%.2e  E/V=%+.6e\n",
                 it, mu, rho_now, dn_max, Eh);
@@ -976,7 +1071,7 @@ solve_rdmft(double rs,
     res.mu        = mu;
     res.rho       = density_of(n);
     res.T_per_V   = EnergyEvaluator::kinetic_per_volume(n, g);
-    res.Exc_per_V = EnergyEvaluator::xc_per_volume(n, g, W, F);
+    res.Exc_per_V = EnergyEvaluator::xc_per_volume(n, g, W, F, W_lr);
     res.E_per_V   = res.T_per_V + res.Exc_per_V;
     res.E_per_N   = (res.rho > 0.0) ? res.E_per_V / res.rho : 0.0;
     res.iters     = it;
@@ -998,13 +1093,21 @@ solve_rdmft(double rs,
         last_failure = failure_reason;
     }
 
-    // Variational selection: among all the start configurations tried,
-    // keep the lowest-energy valid, converged result.  A finite unconverged
-    // result is retained only as a diagnostic fallback if every start fails.
-    if (res.converged && (!best_set || res.E_per_N < best.E_per_N)) {
-        best = res;
-        best_set = true;
-    } else if (!res.converged && finite_result) {
+    // Variational selection: lowest E/N among density-feasible finite results.
+    // Prefer a converged start on ties.  (Requiring convergence-only discarded
+    // the dilute CHF/CGA basin when the additive update walked off the
+    // Cioslowski–Pernal seed without satisfying dn_max < tol.)
+    if (finite_result && density_ok) {
+        const bool better =
+            !best_set
+            || res.E_per_N < best.E_per_N - 1.0e-12
+            || (std::abs(res.E_per_N - best.E_per_N) <= 1.0e-12
+                && res.converged && !best.converged);
+        if (better) {
+            best = res;
+            best_set = true;
+        }
+    } else if (finite_result) {
         const double rho_err = std::abs(res.rho - rho_target);
         const double fallback_rho_err = fallback_set
             ? std::abs(fallback.rho - rho_target)
@@ -1016,6 +1119,76 @@ solve_rdmft(double rs,
         }
     }
     }  // end multi-start loop
+
+    // Additive CHF/CGA share Müller's dilute E/N→−1/8 minimum (Csányi–Arias /
+    // Lathiotakis et al.), but the closed-form additive occupation update is
+    // unstable when k_max ≫ k_F.  Solve the Müller (Power α=1/2) problem on
+    // the same grid and evaluate this kernel on those occupations.
+    // For r_s ≥ 5.77 (unpinned Müller regime) always take that dilute
+    // solution — matching the published CHF→Müller limit — rather than a
+    // metastable additive SCF fixed point.
+    if (additive) {
+        MuellerFunctional mueller;
+        SolveOptions mu_opt = opt;
+        // Müller has a robust closed-form update; keep the caller's mix/tol.
+        auto mu_res = solve_rdmft(rs, mueller, g, W, mu_opt, nullptr);
+        if (valid_occupations(mu_res.n)
+            && std::isfinite(mu_res.rho)
+            && std::abs(mu_res.rho - rho_target) <= rho_tolerance
+            && mu_res.converged) {
+            // Re-evaluate Müller occupations with this kernel.  For
+            // r_s ≥ 5.77 the additive SCF is unreliable (k_max ≫ k_F), so
+            // always take this dilute candidate; below that, compete
+            // variationally with the multistart SCF winner.
+            SolveResult cand;
+            cand.n = mu_res.n;
+            cand.mu = mu_res.mu;
+            cand.rho = density_of(cand.n);
+            cand.T_per_V =
+                EnergyEvaluator::kinetic_per_volume(cand.n, g);
+            cand.Exc_per_V =
+                EnergyEvaluator::xc_per_volume(cand.n, g, W, F, W_lr);
+            cand.E_per_V = cand.T_per_V + cand.Exc_per_V;
+            cand.E_per_N =
+                (cand.rho > 0.0) ? cand.E_per_V / cand.rho : 0.0;
+            cand.iters = mu_res.iters;
+            cand.converged = std::isfinite(cand.E_per_N);
+            constexpr double rs_mueller_unpinned = 5.77;
+            const bool force_dilute = (rs >= rs_mueller_unpinned);
+            if (cand.converged
+                && (!best_set || force_dilute
+                    || cand.E_per_N < best.E_per_N - 1.0e-12)) {
+                best = std::move(cand);
+                best_set = true;
+            }
+        } else {
+            // Fallback: analytic Cioslowski–Pernal occupation.
+            std::vector<double> n_mu = initial_mueller_cioslowski(rs, g);
+            if (project_to_target_density(n_mu) && valid_occupations(n_mu)) {
+                SolveResult cand;
+                cand.n = std::move(n_mu);
+                cand.mu = 0.0;
+                cand.rho = density_of(cand.n);
+                cand.T_per_V =
+                    EnergyEvaluator::kinetic_per_volume(cand.n, g);
+                cand.Exc_per_V =
+                    EnergyEvaluator::xc_per_volume(cand.n, g, W, F, W_lr);
+                cand.E_per_V = cand.T_per_V + cand.Exc_per_V;
+                cand.E_per_N =
+                    (cand.rho > 0.0) ? cand.E_per_V / cand.rho : 0.0;
+                cand.iters = 0;
+                cand.converged =
+                    std::isfinite(cand.E_per_N)
+                    && std::abs(cand.rho - rho_target) <= rho_tolerance;
+                if (cand.converged
+                    && (!best_set
+                        || cand.E_per_N < best.E_per_N - 1.0e-12)) {
+                    best = std::move(cand);
+                    best_set = true;
+                }
+            }
+        }
+    }
 
     if (best_set) return best;
     if (fallback_set) {

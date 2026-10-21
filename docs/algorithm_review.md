@@ -17,6 +17,7 @@ Source map:
 | Energy / density / gradient evaluators | [`include/Energy.hpp`](../include/Energy.hpp) |
 | Self-consistent solver | [`include/Solver.hpp`](../include/Solver.hpp) |
 | PW92 / Ortiz–Ballone references | [`include/QMC.hpp`](../include/QMC.hpp) |
+| Short-range LDA (erf/erfc) | [`include/RangeSeparated.hpp`](../include/RangeSeparated.hpp) |
 | CLI driver | [`src/main.cpp`](../src/main.cpp) |
 
 All quantities are in **Hartree atomic units**. Occupations $n(k)\in[0,1]$ are
@@ -64,8 +65,13 @@ $$
 $$
 \frac{E_{xc}}{V} = -\frac{1}{2\pi^3}\int_0^\infty\!\!\int_0^\infty
    k\,k'\, K\!\bigl(n(k),n(k')\bigr)\,
-   \ln\!\left|\frac{k+k'}{k-k'}\right|\,dk\,dk'.
+   \ln\!\left|\frac{k+k'}{k-k'}\right|\,dk\,dk'
+   \;+\; \varepsilon_{xc}^{\mathrm{dens}}(\rho).
 $$
+
+The density-only shift $\varepsilon_{xc}^{\mathrm{dens}}$ is zero for every
+functional except **PBEHFmM** (§4.2), where it is the LDA XC energy density of
+the uniform gas.
 
 **Derivation check of the prefactors.** Starting from the spin-summed
 momentum-space exchange integral with Coulomb kernel $v(q)=4\pi/q^2$,
@@ -160,10 +166,13 @@ functionals override `kernel`/`kernel_grad`.
 | **SymBow** | $\tfrac12[K_{\mathrm{BOW}}(n_i,n_j)+1-K_{\mathrm{BOW}}(1-n_i,1-n_j)]$ | particle-hole symmetrised BOW |
 | **BBC1** | Müller with smoothed weak–weak sign flip | experimental |
 | **BBC3** | weak–weak / strong–strong / rest rule (smoothed) | equals BBC2 in HEG |
+| **PBEHFmM** | $K=n_in_j-\sqrt{n_in_j}$, plus LDA XC of $\rho$ | PBE + HF − Müller; see §4.2 |
+| **rs($\mu,\alpha$)** | full HF + SR LDA $e_c$ + LR (Power($\alpha$)−HF) | range-separated; true erf/erfc split; see §4.3 |
 
 For every non-separable kernel, `kernel_grad(a,b)` must equal
 $\partial K/\partial a$. This was verified analytically term-by-term for CGA,
-Beta/CHF, OptGeo, HybOpt, BOW, SymBow, BBC1, BBC3 — all consistent. ✔
+Beta/CHF, OptGeo, HybOpt, BOW, SymBow, BBC1, BBC3, and PBEHFmM — all
+consistent. ✔
 The single exception (GEO) is documented next.
 
 ### 4.1 GEO kernel — bug found and fixed
@@ -214,6 +223,64 @@ energy (401-point grid, $k_{\max}=3k_F$):
 
 `data/GEO.tsv` has been regenerated with the corrected kernel. No other
 functional was affected.
+
+### 4.2 PBEHFmM — PBE + HF − Müller
+
+CLI key `PBEHFmM` (`PbeHfMuFunctional`). In the homogeneous gas the density
+gradient vanishes, so PBE collapses to LDA: Slater (HF) exchange plus the PW92
+correlation energy per electron. The functional keeps that LDA piece as a
+**density-only** shift and lets the occupation dependence come from the
+difference of the HF and Müller pair kernels:
+
+$$
+K_{\mathrm{PBEHFmM}}(n_i,n_j)
+  = n_i n_j - \sqrt{n_i n_j}
+  = K_{\mathrm{HF}} - K_{\mathrm{Müller}},
+$$
+
+$$
+\frac{\partial K_{\mathrm{PBEHFmM}}}{\partial n_i}
+  = n_j - \frac12\sqrt{\frac{n_j}{n_i}}.
+$$
+
+The XC energy per volume is therefore
+
+$$
+\frac{E_{xc}}{V}
+  = \Bigl(\frac{E_x}{V}\Bigr)_{\!K_{\mathrm{HF}}-K_{\mathrm{Müller}}}
+  + \rho\,\bigl(e_x^{\mathrm{Slater}}(r_s)+e_c^{\mathrm{PW92}}(r_s)\bigr),
+$$
+
+with $e_x^{\mathrm{Slater}}=-(3/4\pi)k_F$ (`HEG::exchange_per_electron_HF`) and
+$e_c^{\mathrm{PW92}}$ from §7. Endpoint checks: $K(0,\cdot)=0$ and
+$K(1,1)=0$ (the HF and Müller kernels cancel when both occupations are 0 or 1,
+so the uniform-gas XC is carried entirely by the LDA shift).
+
+Because $\varepsilon_{xc}^{\mathrm{dens}}$ depends on $n(k)$ only through the
+fixed density $\rho$, its orbital derivative is the same constant for every
+$k$ and is absorbed into $\mu$. Occupations are therefore stationary for the
+JK kernel alone; the projected-gradient branch (§6.2) is the solver used, with
+the smeared multi-start of §6.3.
+
+### 4.3 rs — range-separated full HF + SR LDA-$c$ + LR Power correlation
+
+CLI `rs@μ` or `rs@μ;α` (`RsFunctional`, defaults
+$\mu=0.5$, $\alpha=0.55$). Coulomb split
+$1/r=\mathrm{erfc}(\mu r)/r+\mathrm{erf}(\mu r)/r$.
+
+* **Exchange:** full HF on bare Coulomb, $K=n_in_j$.
+* **Short-range correlation (density-only):** Molpro `ECERF` / Paziani LDA
+  $\varepsilon_c^{\mathrm{SR}}(r_s,\mu)$ (paramagnetic $\zeta=0$) in
+  [`RangeSeparated.hpp`](../include/RangeSeparated.hpp).
+* **Long-range correlation:** $(E_{\mathrm{Power}(\alpha)}-E_{\mathrm{HF}})$ on the
+  erf matrix $W_{\mathrm{LR}}$ from `ExchangeKernel::build_erf_lr`, i.e.
+  $K_c=n_i^\alpha n_j^\alpha-n_in_j$.
+
+Integer occupations: $K_c=0$, so $E_{xc}=E_x^{\mathrm{HF}}+\varepsilon_c^{\mathrm{SR}}$.
+Limits: $\mu\to0$ → HF + full LDA $e_c$; $\mu\to\infty$ → bare-Coulomb Power($\alpha$).
+Solver: closed-form HF/Power-mix occupation update on
+$U_{\mathrm{HF}}^{\mathrm{SR}}=U_{\mathrm{HF}}[W]-U_{\mathrm{HF}}[W_{\mathrm{LR}}]$ and
+$U_{\mathrm{P}}[W_{\mathrm{LR}}]$ (+ multi-start).
 
 ---
 
@@ -277,7 +344,7 @@ times if the bracket is too tight). ✔ (monotonicity guarantees a unique root).
    decreasing in $n_i$ (for $U_\alpha\ge0$), solved by bisection on $(0,1)$.
 4. **HybOpt**: two-channel HF+Power, monotone LHS, bisection.
 5. **Everything else** (arbitrary separable kernels including NN, BBC1, BBC3,
-   OptGeo sigmoid, BOW, SymBow, and NN-pair):
+   OptGeo sigmoid, BOW, SymBow, PBEHFmM, rs, and NN-pair):
    **projected gradient** with **Armijo backtracking** line search
    ($n_i\leftarrow\mathrm{clip}[\,n_i-\text{step}\,(\varepsilon_i-\mu)\,]$,
    step starting at 1 and halved), with an inner $\mu$ bisection per trial
@@ -289,7 +356,7 @@ Linear mixing $n_i\leftarrow(1-\eta)n_i+\eta\,n_i^{\text{target}}$
 ($\eta=$ `mix`); convergence when $\max_i|\Delta n_i|<$ `tol_n`.
 Driver overrides: `tol_n=1e-8`, `max_iter=1200`, `mix=0.40`.
 For kernels with a competing HF-like minimum (additive, GEO/OptGeo, HybOpt,
-BBC1/BBC3, BOW) the solver runs **several smeared initial guesses** and keeps the
+BBC1/BBC3, BOW, PBEHFmM, rs) the solver runs **several smeared initial guesses** and keeps the
 **lowest-energy** converged result (variational selection). ✔
 
 ---
@@ -325,7 +392,7 @@ $\beta_3=1.6382$, $\beta_4=0.49294$ — the standard PW92 paramagnetic set. ✔
 | $\mu$ bisection / density constraint | ✔ correct (monotone, adaptive bracket) |
 | Power / additive / HybOpt occupation updates | ✔ correct closed-form / monotone inversions |
 | Projected-gradient + Armijo line search | ✔ energy-monotone, robust |
-| `kernel_grad` vs `kernel` (CGA, Beta, CHF, OptGeo, HybOpt, BOW, SymBow, BBC1, BBC3) | ✔ consistent |
+| `kernel_grad` vs `kernel` (CGA, Beta, CHF, OptGeo, HybOpt, BOW, SymBow, BBC1, BBC3, PBEHFmM, rs) | ✔ consistent |
 | **`kernel_grad` vs `kernel` (GEO)** | **✗ fixed** — factor 2 was on the wrong channel |
 | PW92 reference | ✔ correct |
 | Unit tests (`test_hf_exchange`, `test_gz_momentum`, `test_nn_functional`) | ✔ pass after the fix |

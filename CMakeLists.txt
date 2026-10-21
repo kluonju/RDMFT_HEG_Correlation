@@ -54,7 +54,7 @@ set_tests_properties(solver_robustness PROPERTIES
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
 )
 
-add_executable(test_boundaries tests/test_boundaries.cpp)
+add_executable(test_boundaries tests/test_boundaries.cpp src/NNFunctional.cpp)
 add_test(NAME boundaries COMMAND test_boundaries)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)

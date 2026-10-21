@@ -49,11 +49,19 @@ struct Args {
         0.2, 0.3, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0
     };
     std::vector<std::string> funcs;  // must be set via --funcs (no silent default list)
-    // Standard sweep (Makefile / nk figures): 401 odd nodes, k_max = 3 k_F.
-    // grid_type: uniform | log | graded | logfermi  (see Grid.hpp).
+    // Standard sweep (Makefile): N=401 base, k_max = max(factor*k_F, kmax_abs).
+    // Absolute floor (~10 a.u.) is required for Müller/CGA/CHF at large r_s
+    // (analytic Müller E/N = −1/8 needs the long n(k) tail, not a few k_F).
+    // At high density (r_s ≲ 0.1) auto mode densifies N and uses a graded
+    // Fermi mesh — uniform N=401 leaves ~0.17 Ha HF quadrature error at
+    // r_s=0.01 and unreliable Power E_c.
+    // grid_type: auto | uniform | log | graded | logfermi  (see Grid.hpp).
     int    N_grid = 401;
-    double k_max_factor = 3.0;   // k_max = factor * k_F  (default 3 => k/k_F <= 3)
-    std::string grid_type = "uniform";
+    // factor=3 under-resolves the high-k tail at r_s≲0.5 (~1 mHa on CGA/Müller);
+    // 5 matches factor=6 to ~0.1 mHa and stays below the auto log switch (6 k_F).
+    double k_max_factor = 5.0;   // multiplicative part of k_max
+    double k_max_abs = 10.0;    // absolute floor (a.u.); 0 disables
+    std::string grid_type = "auto";
     std::string out_dir = "data";
     std::string nk_out_dir;  // if non-empty, write n(k) TSVs under this directory
     bool   force = false;
@@ -71,15 +79,27 @@ void print_help() {
         "                       (HF, Mueller, GU, CGA, CHF, BBC1, BBC3, GEO,\n"
         "                        OptGeo@<w>;<k>, HybOpt@lambda;alpha, Power@<alpha>,\n"
         "                        Beta@<beta>, BOW or BOW@alpha, SymBow or SymBow@alpha,\n"
-        "                        PBEHFmM, NN@<path/to/model.json>)\n"
+        "                        PBEHFmM, rs or rs@mu[;alpha], rs2 or rs2@mu[;alpha],\n"
+        "                        rs3 or rs3@mu[;alpha],\n"
+        "                        NN@<path/to/model.json>)\n"
         "                       OptGeo: HF + w*(2*sigmoid(k*x)-1), x=(n_i-1/2)^2(n_j-1/2)^2; w,k >= 0.\n"
         "                       HybOpt: (1-lambda) HF + lambda Power(alpha); two floats (one ';').\n"
+        "                       rs: range-separated full HF + SR LDA-c (ECERF) + LR Power(alpha)−HF;\n"
+        "                         defaults mu=0.5, alpha=0.55.\n"
+        "                       rs2: SR LDA x+c (EXERF+ECERF) + LR Power(alpha) on erf Coulomb;\n"
+        "                         defaults mu=0.5, alpha=0.55.\n"
+        "                       rs3: like rs but density-c is Molpro ECERFPBE (sr-PBE);\n"
+        "                         on the HEG this is mu-dependent ECERF (t=0).\n"
+        "                         defaults mu=0.5, alpha=0.55.\n"
+        "                       mu > 0 (default 0.5 a.u.^-1).\n"
         "                       Shell: quote keys that contain ';' (e.g. --funcs 'HybOpt@0.4;0.56').\n"
         "                       OptGM@... is accepted as a legacy alias for HybOpt@....\n"
         "  --N <int>            #grid points (odd, default 401)\n"
-        "  --kmax <float>       k_max = factor * k_F(r_s) at each r_s (default 3)\n"
-        "  --grid <type>        k-mesh: uniform (default), log (dense near k=0),\n"
-        "                       graded (dense near k_F), logfermi (log + Fermi band)\n"
+        "  --kmax <float>       multiplicative factor: k_max >= factor * k_F (default 5)\n"
+        "  --kmax-abs <float>   absolute floor for k_max in a.u. (default 10; 0 disables).\n"
+        "                       Effective k_max = max(factor*k_F, kmax-abs).\n"
+        "  --grid <type>        k-mesh: auto (default; graded+dense N at high density,\n"
+        "                       log when k_max≫k_F), uniform, log, graded, logfermi\n"
         "  --out-dir <dir>      directory for per-functional TSVs (default data)\n"
         "  --nk-out <dir>       write n(k) to <dir>/<func>_rs<rs>.tsv for each solve.\n"
         "                       If the energy TSV already exists, only n(k) is written\n"
@@ -178,6 +198,8 @@ Args parse_args(int argc, char** argv) {
         else if (s == "--N")         a.N_grid  = parse_int(next(), "--N");
         else if (s == "--kmax")      a.k_max_factor =
                                           parse_finite_double(next(), "--kmax");
+        else if (s == "--kmax-abs")  a.k_max_abs =
+                                          parse_finite_double(next(), "--kmax-abs");
         else if (s == "--grid")      a.grid_type = next();
         else if (s == "--out-dir")   a.out_dir = next();
         else if (s == "--nk-out")    a.nk_out_dir = next();
@@ -199,10 +221,14 @@ void validate_args(const Args& args) {
     if (!std::isfinite(args.k_max_factor) || args.k_max_factor <= 1.0) {
         throw std::invalid_argument("--kmax must be finite and greater than 1");
     }
-    if (args.grid_type != "uniform" && args.grid_type != "log"
-        && args.grid_type != "graded" && args.grid_type != "logfermi") {
+    if (!std::isfinite(args.k_max_abs) || args.k_max_abs < 0.0) {
+        throw std::invalid_argument("--kmax-abs must be finite and >= 0");
+    }
+    if (args.grid_type != "auto" && args.grid_type != "uniform"
+        && args.grid_type != "log" && args.grid_type != "graded"
+        && args.grid_type != "logfermi") {
         throw std::invalid_argument(
-            "--grid must be 'uniform', 'log', 'graded', or 'logfermi'");
+            "--grid must be 'auto', 'uniform', 'log', 'graded', or 'logfermi'");
     }
     if (args.rs_list.empty()) {
         throw std::invalid_argument("--rs requires at least one value");
@@ -368,24 +394,62 @@ int run(const Args& args) {
                           << " exists; writing n(k) to " << args.nk_out_dir << "\n";
             }
 
-            // Rebuild the Grid for each rs; k_max = factor * k_F.
+            // Rebuild the Grid for each rs; k_max = max(factor*k_F, kmax_abs).
             for (double rs : args.rs_list) {
                 const double kf = HEG::kF(rs);
-                const double k_max = args.k_max_factor * kf;
-                const std::size_t N = static_cast<std::size_t>(args.N_grid);
+                const double k_max =
+                    std::max(args.k_max_factor * kf, args.k_max_abs);
+                int N_use = args.N_grid;
+                std::string grid_type = args.grid_type;
+                if (grid_type == "auto") {
+                    // Dilute: long absolute k range → log mesh.
+                    // Dense: graded Fermi mesh + denser N (uniform N=401 is
+                    // too coarse for Power-family E_c at r_s=0.01).
+                    if (k_max > 6.0 * kf) {
+                        grid_type = "log";
+                    } else {
+                        // Graded Fermi mesh.  At r_s≲0.05 the HF step
+                        // quadrature error on coarse N pollutes E_c = E−E_HF^grid
+                        // (CGA at r_s=0.01: N=3201 still ~3 mHa from N→∞;
+                        // N≥4801 keeps grid error ≲1 mHa).
+                        grid_type = "graded";
+                        if (rs <= 0.02) {
+                            N_use = std::max(N_use, 4801);
+                        } else if (rs <= 0.05) {
+                            N_use = std::max(N_use, 3201);
+                        } else if (rs <= 0.1) {
+                            N_use = std::max(N_use, 1601);
+                        }
+                    }
+                }
+                // Graded/logfermi factories require odd N.
+                if ((N_use % 2) == 0) ++N_use;
+                const std::size_t N = static_cast<std::size_t>(N_use);
                 Grid g;
-                if (args.grid_type == "log") {
+                if (grid_type == "log") {
                     g = Grid::log_trapezoid(kf, k_max, N);
-                } else if (args.grid_type == "graded") {
+                } else if (grid_type == "graded") {
                     g = Grid::graded_fermi_trapezoid(kf, k_max, N);
-                } else if (args.grid_type == "logfermi") {
+                } else if (grid_type == "logfermi") {
                     g = Grid::log_fermi_trapezoid(kf, k_max, N);
                 } else {
                     g = Grid::uniform_trapezoid(k_max, N);
                 }
                 ExchangeKernel W = ExchangeKernel::build(g);
+                ExchangeKernel W_lr_storage;
+                const ExchangeKernel* W_lr = nullptr;
+                if (F->range_mu() > 0.0
+                    && (F->uses_lr_power_correlation()
+                        || F->uses_lr_power_exchange())) {
+                    W_lr_storage = ExchangeKernel::build_erf_lr(g, F->range_mu());
+                    W_lr = &W_lr_storage;
+                }
 
-                const double E_HF_per_N = HEG::HF_per_electron(rs);
+                // Same-grid HF reference: analytic HF differs from the discrete
+                // Fermi-step energy by ~0.17 Ha at r_s=0.01 on N=401 uniform,
+                // which masquerades as non-convergence / positive E_c.
+                const double E_HF_per_N =
+                    EnergyEvaluator::hf_per_electron_on_grid(rs, g, W);
                 const double Ec_QMC = PW92::ec_per_electron(rs);
 
                 SolveOptions opt;
@@ -395,7 +459,7 @@ int run(const Args& args) {
                 opt.mix = 0.40;
                 opt.init_uniform_n = args.init_uniform_n;
 
-                SolveResult r = solve_rdmft(rs, *F, g, W, opt);
+                SolveResult r = solve_rdmft(rs, *F, g, W, opt, W_lr);
                 bool valid_result =
                     r.n.size() == g.n() && std::isfinite(r.mu)
                     && std::isfinite(r.rho) && r.rho > 0.0

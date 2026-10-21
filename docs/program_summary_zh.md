@@ -153,6 +153,8 @@ $$
 | **HybOpt** | $(1-\lambda)n_in_j+\lambda n_i^\alpha n_j^\alpha$ | $\lambda\in[0,1]$；$\alpha\in(0,1)$（越界或非有限参数会被拒绝） |
 | **BBC1** | 弱–弱占据对 $\sqrt{n_in_j}$ 带**光滑**符号翻转 | 演示非乘积、梯度难；`smooth` 默认 $0.05$ |
 | **BBC3** | 弱–弱 / 强–强 / 其余三种规则 + 光滑化 | HEG 上等价 BBC2 型配对规则 |
+| **PBEHFmM** | $K=n_in_j-\sqrt{n_in_j}$，另加均匀气体的 LDA XC | PBE + HF − Müller；见下 |
+| **rs($\mu,\alpha$)** | 全 HF + SR LDA-$c$ + LR（Power($\alpha$)−HF） | range-separated；真 erf/erfc 分离；见下 |
 
 **GEO 实现（与 `GEOFunctional::kernel`、`kernel_grad` 及求解器 `update_occupations_geo` 一致）**：令 $p=n_in_j$，
 
@@ -161,6 +163,20 @@ K_{\mathrm{GEO}} = \frac{1}{4}\,p + \frac{1}{4}\,p^{1/2} + \frac{1}{2}\,p^{3/4}\
 $$
 
 即三条通道 $(n_in_j,\,(n_in_j)^{1/2},\,(n_in_j)^{3/4})$ 的权重为 **$(w_1,w_2,w_3)=(1/4,\,1/4,\,1/2)$**（HF : Müller : Power(3/4) $=1:1:2$），且 $K(1,1)=1$。**历史修订**：早期 `GEOFunctional::kernel` 误把因子 $2$ 放在 $p^{1/2}$（Müller）通道上，得到 $(1/4,1/2,1/4)$，而 `kernel_grad` 与求解器的通道权重 $(c_1,c_2,c_3)=(1/4,1/4,1/2)$ 一直是 $1:1:2$。这使得**能量**与**占据数**用了不同的核（虽然二者都恰好满足 $K(1,1)=1$，掩盖了问题）。现已将 `kernel` 修正为与梯度、求解器一致的 $1:1:2$，见 `include/Functional.hpp` 注释与 `docs/algorithm_review.md`。
+
+**PBEHFmM**（`PbeHfMuFunctional`，命令行键 `PBEHFmM`）是 **PBE + HF − Müller**。均匀电子气中密度梯度为零，PBE 退化为 LDA（Slater 交换 + PW92 关联）。占据依赖只来自 HF 与 Müller 两体核之差，LDA 作为只依赖密度 $\rho$ 的附加项：
+
+$$
+K_{\mathrm{PBEHFmM}}(n_i,n_j)=n_in_j-\sqrt{n_in_j},
+\qquad
+\frac{E_{xc}}{V}
+=\Bigl(\frac{E_x}{V}\Bigr)_{\!K_{\mathrm{HF}}-K_{\mathrm{Müller}}}
++\rho\bigl(e_x^{\mathrm{Slater}}(r_s)+e_c^{\mathrm{PW92}}(r_s)\bigr).
+$$
+
+$K(0,\cdot)=0$、$K(1,1)=0$（两端 HF 与 Müller 相消，均匀气体的 XC 全部由 LDA 项承担）。$\varepsilon_{xc}^{\mathrm{dens}}(\rho)$ 对每个 $k$ 的轨道导数是同一个常数，被化学势 $\mu$ 吸收，因此占据数只对 JK 核定态；求解走投影梯度分支，并启用抹阶多起点。
+
+**rs**（range-separated；`rs@μ` 或 `rs@μ;α`，默认 $\mu=0.5$、$\alpha=0.55$）：库仑分离 $1/r=\mathrm{erfc}(\mu r)/r+\mathrm{erf}(\mu r)/r$。**交换**为全库仑 HF（$K=n_in_j$）；**短程关联**为 Molpro `ECERF`/Paziani LDA $\varepsilon_c^{\mathrm{SR}}$；**长程关联**为 erf 上的 Power($\alpha$)−HF（$K_c=n_i^\alpha n_j^\alpha-n_in_j$）。整数占据时 $K_c=0$，退化为 HF + $\varepsilon_c^{\mathrm{SR}}$。求解：短程 HF + 长程 Power 的闭式 HF/Power 混合占据更新 + 多起点。
 
 **HybOpt** 与 **OptGeo** 的 CLI：`HybOpt@lambda;alpha`、`OptGeo@a;b;c`（分号分隔，shell 中常需引号）。
 
@@ -190,7 +206,7 @@ $$
 
 4. **HybOpt**：两通道 HF + Power，LHS 对 $n$ 单调时用二分（`update_occupations_hf_power_mix` + 专用 $\mu$ 二分）。
 
-5. **通用分支**（任意可分离核如 NN，以及 OptGeo、BBC1/BBC3、BOW、SymBow、NN-pair）：**投影梯度 + Armijo 回溯线搜索**（初始步长 `1.0`，逐次减半）：$n_i\leftarrow\mathrm{clip}\bigl(n_i-\mathrm{step}\cdot(\varepsilon_i-\mu)\bigr)$，每个候选步内层仍配合 $\mu$ 二分以满足 $\rho$。
+5. **通用分支**（任意可分离核如 NN，以及 OptGeo、BBC1/BBC3、BOW、SymBow、PBEHFmM、rs、NN-pair）：**投影梯度 + Armijo 回溯线搜索**（初始步长 `1.0`，逐次减半）：$n_i\leftarrow\mathrm{clip}\bigl(n_i-\mathrm{step}\cdot(\varepsilon_i-\mu)\bigr)$，每个候选步内层仍配合 $\mu$ 二分以满足 $\rho$。
 
 ### 7.3 线性混合
 
@@ -205,7 +221,7 @@ $$
 
 ### 7.4 多起点与亚稳态
 
-对 **可加型**（CGA/Beta，含 CHF）、**GEO/OptGeo**、**HybOpt**、**BBC1/BBC3**、BOW 等，`needs_multistart` 为真：在「HF 阶跃」与多种宽度参数的 **Fermi 型抹阶** `initial_smeared` 之间多起点尝试；仅在满足有限性、占据边界与密度约束的收敛解中，**保留每电子总能量 $E/N$ 最低**者（变分择优）。
+对 **可加型**（CGA/Beta，含 CHF）、**GEO/OptGeo**、**HybOpt**、**BBC1/BBC3**、BOW、**PBEHFmM**、**rs** 等，`needs_multistart` 为真：在「HF 阶跃」与多种宽度参数的 **Fermi 型抹阶** `initial_smeared` 之间多起点尝试；仅在满足有限性、占据边界与密度约束的收敛解中，**保留每电子总能量 $E/N$ 最低**者（变分择优）。
 
 **可加型技巧**：计算空穴通道 $U_g$ 时对 $n$ 用软钳制 $n\in[n_{\mathrm{floor}},1-n_{\mathrm{floor}}]$（代码中 $n_{\mathrm{floor}}=10^{-6}$）计算 $g(n)$，使 $g'$ 在饱和端不发散、帮助离开 HF 型局域极小；**能量仍用未钳制的 $n$**。
 
